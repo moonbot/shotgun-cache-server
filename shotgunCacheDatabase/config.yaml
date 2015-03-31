@@ -15,10 +15,11 @@ elastic:
 entityConfigManager:
     configFolder: ./entities
 
+shotgun:
+    url: https://moonbotstudios.shotgunstudio.com
+    scriptName: shotgunEventDaemon
+    apiKey: 27c98a581326e3e85df1ef271991db0a4a737838
+
 monitor:
     zmqPostUrl: tcp://0.0.0.0:5557
 
-    shotgunConfig:
-        url: https://moonbotstudios.shotgunstudio.com
-        scriptName: shotgunEventDaemon
-        apiKey: 27c98a581326e3e85df1ef271991db0a4a737838

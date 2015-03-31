@@ -1,16 +1,12 @@
-import os
 import socket
 import time
 import zmq
-import datetime
-import urlparse
 
-import mbotenv
-import debug
+import logging
 
 import shotgun_api3 as sg
 
-LOG = mbotenv.get_logger(__name__)
+LOG = logging.getLogger(__name__)
 LOG.level = 10
 
 
@@ -79,6 +75,8 @@ class ShotgunMonitor(object):
             events = self.getNewEvents()
 
             if len(events):
+                LOG.debug("{0} new EventLogEntrys".format(len(events)))
+
                 postStartTime = time.time()
                 entityEvents = self.prepareEntityEvents(events)
                 self.postItems(entityEvents)
@@ -179,7 +177,7 @@ class ShotgunMonitor(object):
                     entityType=entityType,
                     subType=subType
                 )
-                result['filters'].append(['event_type','is',eventType])
+                result['filters'].append(['event_type', 'is', eventType])
         return [result]
 
     def getNewEvents(self):
@@ -187,8 +185,6 @@ class ShotgunMonitor(object):
         Fetch the new EventLogEntry entities from Shotgun
         Loops until successful
         """
-        # TODO
-        # Limit to the list of cached entities
         filters = [
             ['id', 'greater_than', self.latestEventID]
         ]
@@ -223,12 +219,4 @@ class ShotgunMonitor(object):
                 LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.connRetrySleep))
                 time.sleep(self.connRetrySleep)
 
-        LOG.debug("{0} new EventLogEntrys".format(len(result)))
         return result
-
-
-# TODO
-# Maybe implement some way to launch this standalone in the future
-# if __name__ == '__main__':
-#     d = ShotgunMonitor()
-#     d.run()

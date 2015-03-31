@@ -3,14 +3,15 @@ import zmq
 import multiprocessing
 import yaml
 
-import mbotenv
+import logging
+
+import mbotenv  # For paths, TODO
 
 import entityConfig
 # import dbWorkerManager
 import monitor
 
-ROOTLOG = mbotenv.get_logger()
-LOG = mbotenv.get_logger(__name__)
+LOG = logging.getLogger(__name__)
 LOG.level = 10
 
 
@@ -46,6 +47,8 @@ class DatabaseController(object):
         config = self.config['entityConfigManager']
         self.entityConfigManager = entityConfig.EntityConfigManager(
             enableStats=self.config['enableStats'],
+            previousHashes=self.history.get('configHashes', {}),
+            shotgunConfig=self.config['shotgun'],
             **config
         )
 
@@ -58,6 +61,7 @@ class DatabaseController(object):
         self.monitor = monitor.ShotgunMonitor(
             enableStats=self.config['enableStats'],
             latestEventID=self.history.get('latestEventID', None),
+            shotgunConfig=self.config['shotgun'],
             **config
         )
         self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
@@ -71,37 +75,25 @@ class DatabaseController(object):
 
     def start(self):
         self.entityConfigManager.load()
+        self.monitor.setEntityTypes(self.entityConfigManager.getEntityTypes())
         self.monitorProcess.start()
         # self.dbWorkerManager.start()
-        self.initializeEntities()
+        self.preloadEntities()
         self.run()
 
-    def initializeEntities(self):
+    def preloadEntities(self):
         LOG.debug("Initializing Entities")
-        # for sgType in self.entityConfigManager.entityTypes():
-        #     if self.entityConfigManager.configHasChanged(sgType):
-        #         LOG.debug("CONFIG CHANGED {0}: Entity config template has changed, rebuilding cache".format(sgType))
-        #         self.dbWorkerManager.postWork({'type': sgType})
+        # TODO
+        # Force preloading?
         for c in self.entityConfigManager.configs.values():
-            lastHash = self.history.get('configHashes', {}).get(c.type, None)
-
-            if lastHash != c.hash:
-                LOG.info("{0} Config Changed".format(c.type))
+            if c.needsUpdate():
+                LOG.info("{0} Config Updated".format(c.type))
                 # TODO
                 # Start preload for this entity
 
             self.history['configHashes'][c.type] = c.hash
 
         self.writeHistoryToDisk()
-
-    # def postWork(self, entityEvent, preload=False):
-    #     pass
-    #     # Why do I need ordering?
-    #     #
-
-    # def getWork(self):
-    #     # Find the entity event with the earliest updated_at field in the queue
-    #     pass
 
     def run(self):
         LOG.debug("Starting Main Event Loop")
@@ -119,7 +111,7 @@ class DatabaseController(object):
             if work[0] == 'latestEventID':
                 self.updateLatestEventID(work[1])
 
-            print("work: {0}".format(work)) # TESTING
+            LOG.debug("Work: {0}".format(work))
 
             LOG.debug("Posting new event")
             # self.dbWorkerManager.postWork(work)
@@ -132,6 +124,8 @@ class DatabaseController(object):
         with open(self.historyPath, 'w') as f:
             yaml.dump(self.history, f, default_flow_style=False, indent=4)
 
+
 if __name__ == '__main__':
+    logging.basicConfig()
     controller = DatabaseController()
     controller.start()
