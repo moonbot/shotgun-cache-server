@@ -1,0 +1,72 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "addressings_cc": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "addressings_to": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "attachments": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "cached_display_name": {}, 
+        "client_note": {}, 
+        "content": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "id": {}, 
+        "note_links": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "playlist": {}, 
+        "project": {}, 
+        "replies": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "reply_content": {}, 
+        "sg_note_type": {}, 
+        "sg_status_list": {}, 
+        "subject": {}, 
+        "tag_list": {}, 
+        "tasks": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "user": {}, 
+        "visible": {}
+    }
+}

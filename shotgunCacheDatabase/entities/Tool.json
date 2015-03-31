@@ -1,0 +1,61 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "cached_display_name": {}, 
+        "code": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "description": {}, 
+        "id": {}, 
+        "notes": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "open_notes": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "open_notes_count": {}, 
+        "project": {}, 
+        "sg_log_count": {}, 
+        "sg_repository": {}, 
+        "sg_status_list": {}, 
+        "sg_task_count": {}, 
+        "sg_tool_type": {}, 
+        "step_0": {}, 
+        "step_35": {}, 
+        "step_36": {}, 
+        "step_37": {}, 
+        "step_38": {}, 
+        "step_52": {}, 
+        "tag_list": {}, 
+        "task_template": {}, 
+        "tasks": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "visible": {}
+    }
+}

@@ -1,0 +1,3 @@
+include versioneer.py
+include envtools/_version.py
+include README.mdinclude shotgunCacheServer/_version.py

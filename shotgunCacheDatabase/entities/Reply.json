@@ -1,0 +1,26 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "cached_display_name": {}, 
+        "content": {}, 
+        "created_at": {}, 
+        "entity": {}, 
+        "id": {}, 
+        "user": {}, 
+        "visible": {}
+    }
+}

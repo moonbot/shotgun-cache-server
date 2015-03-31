@@ -1,0 +1,24 @@
+---
+
+# Whether to track stats on the performance of the
+# Cache server
+enableStats: true
+historyFile: "~/.shotgunCacheHistory"
+
+elastic:
+    init:
+        hosts:
+            - localhost
+        sniff_on_start: true
+    indexNameTemplate: "shotgun-entity-{type}"
+
+entityConfigManager:
+    configFolder: ./entities
+
+monitor:
+    zmqPostUrl: tcp://0.0.0.0:5557
+
+    shotgunConfig:
+        url: https://moonbotstudios.shotgunstudio.com
+        scriptName: shotgunEventDaemon
+        apiKey: 27c98a581326e3e85df1ef271991db0a4a737838

@@ -1,0 +1,31 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "bg_color": {}, 
+        "cached_display_name": {}, 
+        "code": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "icon": {}, 
+        "id": {}, 
+        "name": {}, 
+        "system": {}, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "visible": {}
+    }
+}

@@ -1,0 +1,159 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string",
+                    "mapping": {
+                        "index": "not_analyzed",
+                        "type": "string",
+                        "omit_norms": true
+                    },
+                    "match": "*"
+                }
+            }
+        ]
+    },
+    "fields": {
+        "addressings_cc": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "assets": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "cached_display_name": {},
+        "code": {},
+        "created_at": {},
+        "created_by": {},
+        "custom_entity01_sg_shots_custom_entity01s": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "cut_duration": {},
+        "cut_in": {},
+        "cut_out": {},
+        "description": {},
+        "head_duration": {},
+        "head_in": {},
+        "head_out": {},
+        "id": {},
+        "notes": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "open_notes": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "open_notes_count": {},
+        "parent_shots": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "project": {},
+        "sg_24f_handle_head": {},
+        "sg_24f_handle_tail": {},
+        "sg_2d_animation": {},
+        "sg_audio": {},
+        "sg_back_plate": {},
+        "sg_bid": {},
+        "sg_bill": {},
+        "sg_camera": {},
+        "sg_cut_in": {},
+        "sg_cut_order": {},
+        "sg_cut_out": {},
+        "sg_decor": {},
+        "sg_estimated_render_time_per_frame__hours_": {},
+        "sg_external_id": {},
+        "sg_files": {},
+        "sg_focal_length": {},
+        "sg_focus_distance_1": {},
+        "sg_frame_duration": {},
+        "sg_fstop": {},
+        "sg_hdri": {},
+        "sg_head_frames": {},
+        "sg_miniature_size": {},
+        "sg_moving_camera": {},
+        "sg_moving_plate": {},
+        "sg_optical": {},
+        "sg_perforce_path": {},
+        "sg_scene": {},
+        "sg_sent_date": {},
+        "sg_sequence": {},
+        "sg_sequences": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "sg_setting": {},
+        "sg_shot_type": {},
+        "sg_status_list": {},
+        "sg_tail_frames": {},
+        "shots": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "smart_cut_duration": {},
+        "smart_cut_in": {},
+        "smart_cut_out": {},
+        "smart_cut_summary_display": {},
+        "smart_duration_summary_display": {},
+        "smart_head_duration": {},
+        "smart_head_in": {},
+        "smart_head_out": {},
+        "smart_tail_duration": {},
+        "smart_tail_in": {},
+        "smart_tail_out": {},
+        "smart_working_duration": {},
+        "step_0": {},
+        "step_2": {},
+        "step_3": {},
+        "step_31": {},
+        "step_32": {},
+        "step_39": {},
+        "step_4": {},
+        "step_47": {},
+        "step_48": {},
+        "step_49": {},
+        "step_51": {},
+        "step_6": {},
+        "step_7": {},
+        "tag_list": {},
+        "tail_duration": {},
+        "tail_in": {},
+        "tail_out": {},
+        "task_sg_used_in_tasks": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "task_template": {},
+        "tasks": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "updated_at": {},
+        "updated_by": {},
+        "visible": {}
+    }
+}
