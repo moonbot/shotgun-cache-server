@@ -72,13 +72,14 @@ class DatabaseController(object):
         self.monitorSocket = self.monitorContext.socket(zmq.PULL)
         self.monitorSocket.bind(config['zmqPostUrl'])
 
-        self.monitor = monitor.ShotgunMonitor(
+        self.monitor = monitor.ShotgunEventMonitor(
             enableStats=self.config['enableStats'],
             latestEventID=self.history.get('latestEventID', None),
             shotgunConnector=self.shotgunConnector,
             **config
         )
         self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
+        self.monitorProcess.daemon = True
 
     # def _init_db_controller(self):
     #     self.dbWorkerManager = dbWorkerManager.DBWorkerManager(

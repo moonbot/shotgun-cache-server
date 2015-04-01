@@ -6,19 +6,25 @@ import logging
 
 import shotgun_api3 as sg
 
+__all__ = [
+    'ShotgunEventMonitor',
+]
+
 LOG = logging.getLogger(__name__)
 LOG.level = 10
 
 
-
-
-class ShotgunMonitor(object):
+class ShotgunEventMonitor(object):
+    """
+    Stripped down version of the Shotgun Event Daemon
+    Records when EventLogEntry's have changed in shotgun
+    """
     eventSubTypes = ['New', 'Change', 'Retirement', 'Revival']
 
     def __init__(self, zmqPostUrl, shotgunConnector, latestEventID=None,
                  maxConnRetries=5, connRetrySleep=60, maxEventBatchSize=500,
                  fetchInterval=1, enableStats=True):
-        super(ShotgunMonitor, self).__init__()
+        super(ShotgunEventMonitor, self).__init__()
         self.zmqPostUrl = zmqPostUrl
         self.shotgunConnector = shotgunConnector
         self.latestEventID = latestEventID
@@ -37,15 +43,6 @@ class ShotgunMonitor(object):
         self._latestEventID = None
         self._latestEventIDPath = None
         self._loopStartTime = None
-
-    def prepareEntityEvents(self, events):
-        result = []
-        for event in events:
-            result.append({
-                'type': 'entityUpdate',
-                'data': event
-            })
-        return result
 
     def start(self):
         self.context = zmq.Context()
@@ -90,12 +87,14 @@ class ShotgunMonitor(object):
                         'timeToPost': timeToPost,
                     })
 
-    def postStat(self, statDict):
-        if self.enableStats:
-            self.postItems([{
-                'type': 'stat',
-                'data': statDict
-            }])
+    def prepareEntityEvents(self, events):
+        result = []
+        for event in events:
+            result.append({
+                'type': 'entityUpdate',
+                'data': event
+            })
+        return result
 
     def loadInitialEventID(self):
         if self.latestEventID is None:
@@ -211,3 +210,10 @@ class ShotgunMonitor(object):
                 time.sleep(self.connRetrySleep)
 
         return result
+
+    def postStat(self, statDict):
+        if self.enableStats:
+            self.postItems([{
+                'type': 'stat',
+                'data': statDict
+            }])
