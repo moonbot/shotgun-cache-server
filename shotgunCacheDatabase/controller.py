@@ -250,12 +250,19 @@ class DatabaseController(object):
                 raise TypeError("Invalid work item, expected dict: {0}".format(work))
 
             if work['type'] == 'latestEventID':
-                self.updateLatestEventID(work['data']['latestEvedatntID'])
+                self.updateLatestEventID(work['data']['eventID'])
             elif work['type'] == 'reimportEntities':
+                # TODO
+                # Create utility and test this
                 self.reimportEntity(work['data']['entityTypes'])
             elif work['type'] == 'entityUpdate':
                 # TODO
                 pass
+            elif work['type'] == 'stat':
+                if self.config['enableStats']:
+                    pass
+            else:
+                raise TypeError("Unkown work type: {0}".format(work['type']))
 
             LOG.debug("Work: {0}".format(work))
 

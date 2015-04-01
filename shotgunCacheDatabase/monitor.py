@@ -42,7 +42,7 @@ class ShotgunMonitor(object):
         result = []
         for event in events:
             result.append({
-                'type': 'entityEvent',
+                'type': 'entityUpdate',
                 'data': event
             })
         return result
@@ -127,7 +127,7 @@ class ShotgunMonitor(object):
         self.setLatestEventID(eventID)
 
     def setLatestEventID(self, eventID):
-        self.postItems([('latestEventID', eventID)])
+        self.postItems([{'type': 'latestEventID', 'data': {'eventID': eventID}}])
         self.latestEventID = eventID
 
     def connect(self, force=False):
