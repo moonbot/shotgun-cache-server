@@ -4,9 +4,7 @@ import json
 import logging
 import hashlib
 
-from collections import Mapping
-
-import shotgun_api3 as sg
+from collections import Mapping, OrderedDict
 
 __all__ = [
     'EntityConfig',
@@ -20,12 +18,14 @@ LOG.level = 10
 # Better place to create shotgun connection than in EntityConfigManager?
 # Project specific schema?
 
+
 class EntityConfig(Mapping):
-    def __init__(self, type, configPath, previousHash):
+    def __init__(self, type, configPath, previousHash, elasticIndex):
         self.type = type
         self.configPath = configPath
         self.hash = None
         self.previousHash = previousHash
+        self.elasticIndex = elasticIndex
 
         self.config = None
         self.loadConfig()
@@ -62,18 +62,18 @@ class EntityConfig(Mapping):
 
 
 class EntityConfigManager(object):
-    def __init__(self, configFolder, previousHashes, shotgunConnector, enableStats=False):
+    def __init__(self, configFolder, previousHashes, shotgunConnector, elasticIndexTemplate, elasticDefaultMapping):
         super(EntityConfigManager, self).__init__()
-        self.enableStats = enableStats
         self.configFolder = configFolder
         self.shotgunConnector = shotgunConnector
         self.previousHashes = previousHashes
+        self.elasticDefaultMapping = elasticDefaultMapping
         self.configs = {}
-        self.sg = None
         self.schema = None
+        self.elasticIndexTemplate = elasticIndexTemplate
+        self.sg = self.shotgunConnector.getInstance()
 
     def load(self):
-        self.sg = self.shotgunConnector.getInstance()
         self.loadSchema()
         for path in self.getConfigFilePaths():
             typ = os.path.basename(os.path.splitext(path)[0])
@@ -104,6 +104,9 @@ class EntityConfigManager(object):
     def getConfigFilePaths(self):
         path = os.path.abspath(self.configFolder)
         result = []
+        if not os.path.exists(path):
+            raise OSError("Entity config folder path doesn't exist: {0}".format(path))
+
         for f in os.listdir(path):
             if not f.endswith('.json'):
                 continue
@@ -116,3 +119,48 @@ class EntityConfigManager(object):
 
     def getConfigForEntity(self, type):
         return self.configs.__getitem__(type)
+
+    def generateEntityConfigFiles(self, types):
+        LOG.debug("Reading Shotgun schema")
+        schema = self.sg.schema_read()
+
+        LOG.debug("Creating config files")
+        for sgType in types:
+            if sgType not in schema:
+                raise ValueError("Missing shotgun entity type: {0}".format(sgType))
+
+            destFolderPath = os.path.abspath(self.configFolder)
+            destPath = os.path.join(destFolderPath, '{type}.json'.format(type=sgType))
+
+            entityConfig = OrderedDict()
+
+            index = self.elasticIndexTemplate.format(type=sgType.lower())  # Elastic requires lowercase
+            entityConfig['index'] = index
+
+            defaultMapping = self.elasticDefaultMapping
+            if defaultMapping:
+                entityConfig['defaultMapping'] = defaultMapping
+
+            typeSchema = schema[sgType]
+            # print envtools.format_dict(typeSchema)
+            fields = typeSchema.keys()
+            fieldsConfig = entityConfig['fields'] = OrderedDict()
+            for field in sorted(fields):
+                fieldConfig = {}
+                fieldSchema = typeSchema[field]
+
+                fieldDataType = fieldSchema.get('data_type', {}).get('value', None)
+                if fieldDataType == 'multi_entity':
+                    fieldConfig['mapping'] = {'type': 'nested', 'include_in_parent': True}
+                elif fieldDataType == 'image':
+                    # Don't store these yet
+                    # TODO binary support
+                    continue
+
+                fieldsConfig[field] = fieldConfig
+
+            if not os.path.exists(destFolderPath):
+                os.makedirs(destFolderPath)
+            with open(destPath, 'w') as f:
+                f.write(json.dumps(entityConfig, indent=4))
+            LOG.info("{0} Entity Config Template: {1}".format(sgType, destPath))

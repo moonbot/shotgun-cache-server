@@ -18,21 +18,21 @@ class ShotgunEventMonitor(object):
     """
     Stripped down version of the Shotgun Event Daemon
     Records when EventLogEntry's have changed in shotgun
+    and sends the changes to the DatabaseController through zmq
     """
     eventSubTypes = ['New', 'Change', 'Retirement', 'Revival']
 
-    def __init__(self, zmqPostUrl, shotgunConnector, latestEventID=None,
-                 maxConnRetries=5, connRetrySleep=60, maxEventBatchSize=500,
-                 fetchInterval=1, enableStats=True):
+    def __init__(self, zmqPostUrl, shotgunConnector, latestEventLogEntry=None,
+                 max_conn_retries=5, conn_retry_sleep=60, max_event_batch_size=500,
+                 fetch_interval=1):
         super(ShotgunEventMonitor, self).__init__()
         self.zmqPostUrl = zmqPostUrl
         self.shotgunConnector = shotgunConnector
-        self.latestEventID = latestEventID
-        self.maxConnRetries = maxConnRetries
-        self.connRetrySleep = connRetrySleep
-        self.maxEventBatchSize = maxEventBatchSize
-        self.fetchInterval = fetchInterval
-        self.enableStats = enableStats
+        self.latestEventLogEntry = latestEventLogEntry
+        self.max_conn_retries = max_conn_retries
+        self.conn_retry_sleep = conn_retry_sleep
+        self.max_event_batch_size = max_event_batch_size
+        self.fetch_interval = fetch_interval
 
         self.entityTypes = []
 
@@ -67,11 +67,17 @@ class ShotgunEventMonitor(object):
                 LOG.debug("{0} new EventLogEntrys".format(len(events)))
 
                 postStartTime = time.time()
-                entityEvents = self.prepareEntityEvents(events)
-                self.postItems(entityEvents)
+                body = {
+                    'type': 'eventLogEntries',
+                    'data': {
+                        'entities': events,
+                    },
+                }
+
+                self.socket.send_pyobj(body)
                 timeToPost = time.time() - postStartTime
 
-                self.updateLatestEventID(events)
+                self.setLatestEventLogEntry(events[-1])
                 totalEventsInLoop += len(events)
                 reset = False
             else:
@@ -80,12 +86,17 @@ class ShotgunEventMonitor(object):
 
                 # Only report status for loops with events
                 if totalEventsInLoop:
-                    self.postStat({
-                        'statType': 'monitor_post',
-                        'fetchInterval': self.fetchInterval,
-                        'totalEvents': totalEventsInLoop,
-                        'timeToPost': timeToPost,
-                    })
+                    statData = {
+                        'type': 'stat',
+                        'data': {
+                            'statType': 'monitor_post',
+                            'fetch_interval': self.fetch_interval,
+                            'totalEvents': totalEventsInLoop,
+                            # might not need this, most of the time below 1 ms
+                            'duration': round(timeToPost * 1000, 3),
+                        },
+                    }
+                    self.socket.send_pyobj(statData)
 
     def prepareEntityEvents(self, events):
         result = []
@@ -97,7 +108,7 @@ class ShotgunEventMonitor(object):
         return result
 
     def loadInitialEventID(self):
-        if self.latestEventID is None:
+        if self.latestEventLogEntry is None:
             LOG.debug("Loading initial EventLogEntry id")
 
             while True:
@@ -106,28 +117,28 @@ class ShotgunEventMonitor(object):
                 order = [{'column': 'id', 'direction': 'desc'}]
                 try:
                     _sg = self.connect()
-                    result = _sg.find_one("EventLogEntry", filters=[], fields=['id'], order=order)
+                    result = _sg.find_one("EventLogEntry", filters=[], fields=['id', 'created_at'], order=order)
                     break
                 except (sg.ProtocolError, sg.ResponseError, socket.error):
                     self.connect(force=True)
-                    LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.maxConnRetries))
+                    LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.max_conn_retries))
                     conn_attempts += 1
 
-                if conn_attempts >= self.maxConnRetries:
-                    LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.connRetrySleep))
-                    time.sleep(self.connRetrySleep)
+                if conn_attempts >= self.max_conn_retries:
+                    LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.conn_retry_sleep))
+                    time.sleep(self.conn_retry_sleep)
 
-            self.setLatestEventID(result['id'])
+            self.setLatestEventLogEntry(result)
 
-    def updateLatestEventID(self, events):
-        # Extract latest event ID
-        ids = [e['id'] for e in events]
-        eventID = max(ids)
-        self.setLatestEventID(eventID)
-
-    def setLatestEventID(self, eventID):
-        self.postItems([{'type': 'latestEventID', 'data': {'eventID': eventID}}])
-        self.latestEventID = eventID
+    def setLatestEventLogEntry(self, entity):
+        _entity = dict([(k, v) for k, v in entity.items() if k in ['id', 'created_at']])
+        self.socket.send_pyobj({
+            'type': 'latestEventLogEntry',
+            'data': {
+                'entity': _entity
+            }
+        })
+        self.latestEventLogEntry = _entity
 
     def connect(self, force=False):
         if force or self.sg is None:
@@ -135,16 +146,11 @@ class ShotgunEventMonitor(object):
             self.sg = self.shotgunConnector.getInstance()
         return self.sg
 
-    def postItems(self, items):
-        LOG.debug("Posting {0} items".format(len(items)))
-        for item in items:
-            self.socket.send_pyobj(item)
-
     def fetchDelay(self):
         diff = 0
         if self._loopStartTime is not None:
             diff = time.time() - self._loopStartTime
-        sleepTime = max(self.fetchInterval - diff, 0)
+        sleepTime = max(self.fetch_interval - diff, 0)
         if sleepTime:
             time.sleep(sleepTime)
 
@@ -176,7 +182,7 @@ class ShotgunEventMonitor(object):
         Loops until successful
         """
         filters = [
-            ['id', 'greater_than', self.latestEventID]
+            ['id', 'greater_than', self.latestEventLogEntry['id']]
         ]
         filters.extend(self.baseFilters)
         fields = [
@@ -198,22 +204,15 @@ class ShotgunEventMonitor(object):
         while True:
             try:
                 _sg = self.connect()
-                result = _sg.find("EventLogEntry", filters, fields, order, limit=self.maxEventBatchSize)
+                result = _sg.find("EventLogEntry", filters, fields, order, limit=self.max_event_batch_size)
                 break
             except (sg.ProtocolError, sg.ResponseError, socket.error):
                 self.connect(force=True)
-                LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.maxConnRetries))
+                LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.max_conn_retries))
                 conn_attempts += 1
 
-            if conn_attempts >= self.maxConnRetries:
-                LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.connRetrySleep))
-                time.sleep(self.connRetrySleep)
+            if conn_attempts >= self.max_conn_retries:
+                LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.conn_retry_sleep))
+                time.sleep(self.conn_retry_sleep)
 
         return result
-
-    def postStat(self, statDict):
-        if self.enableStats:
-            self.postItems([{
-                'type': 'stat',
-                'data': statDict
-            }])

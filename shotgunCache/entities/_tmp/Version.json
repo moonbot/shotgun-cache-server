@@ -1,0 +1,108 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "cached_display_name": {}, 
+        "client_code": {}, 
+        "code": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "description": {}, 
+        "entity": {}, 
+        "flagged": {}, 
+        "frame_count": {}, 
+        "frame_range": {}, 
+        "id": {}, 
+        "media_center_import_time": {}, 
+        "notes": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "open_notes": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "open_notes_count": {}, 
+        "playlists": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "project": {}, 
+        "published_files": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "sg_file_path": {}, 
+        "sg_first_frame": {}, 
+        "sg_frame_rate": {}, 
+        "sg_frames_aspect_ratio": {}, 
+        "sg_frames_have_slate": {}, 
+        "sg_height": {}, 
+        "sg_last_frame": {}, 
+        "sg_linked_versions": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "sg_movie_aspect_ratio": {}, 
+        "sg_movie_has_slate": {}, 
+        "sg_path_template": {}, 
+        "sg_path_to_frames": {}, 
+        "sg_path_to_movie": {}, 
+        "sg_pipeline_step": {}, 
+        "sg_qt": {}, 
+        "sg_status_list": {}, 
+        "sg_task": {}, 
+        "sg_uploaded_movie": {}, 
+        "sg_uploaded_movie_frame_rate": {}, 
+        "sg_uploaded_movie_image": {}, 
+        "sg_uploaded_movie_mp4": {}, 
+        "sg_uploaded_movie_transcoding_status": {}, 
+        "sg_uploaded_movie_webm": {}, 
+        "sg_version_type": {}, 
+        "sg_width": {}, 
+        "step_0": {}, 
+        "tag_list": {}, 
+        "task_template": {}, 
+        "tasks": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "user": {}, 
+        "version_sg_linked_versions_versions": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "viewed_by_current_user": {}, 
+        "viewed_by_current_user_at": {}, 
+        "visible": {}
+    }
+}

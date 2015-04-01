@@ -1,0 +1,121 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string",
+                    "mapping": {
+                        "index": "not_analyzed",
+                        "type": "string",
+                        "omit_norms": true
+                    },
+                    "match": "*"
+                }
+            }
+        ]
+    },
+    "fields": {
+        "app_welcomes": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "banners": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "bookings": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "cached_display_name": {},
+        "created_at": {},
+        "created_by": {},
+        "custom_home_page": {},
+        "department": {},
+        "email": {},
+        "email_all_deliveries": {},
+        "email_all_notes": {},
+        "email_all_tasks": {},
+        "email_all_tickets": {},
+        "email_all_versions": {},
+        "email_deliveries": {},
+        "email_inbox_general": {},
+        "email_inbox_notes": {},
+        "email_notes": {},
+        "email_tasks": {},
+        "email_tickets": {},
+        "email_version_link_cc": {},
+        "email_versions": {},
+        "enable_tank_integration": {},
+        "file_access": {},
+        "firstname": {},
+        "groups": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "human_user_sg_managed_users_human_users": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "id": {},
+        "lastname": {},
+        "locked_until": {},
+        "login": {},
+        "name": {},
+        "password_change_next_login": {},
+        "password_proxy": {},
+        "password_strength": {},
+        "permission_rule_set": {},
+        "pipeline_configurations": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "projects": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "sg_company": {},
+        "sg_employment_status": {},
+        "sg_enable_time_card": {},
+        "sg_hourglass_enabled": {},
+        "sg_managed_groups": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "sg_managed_users": {
+            "mapping": {
+                "include_in_parent": true,
+                "type": "nested"
+            }
+        },
+        "sg_nickname": {},
+        "sg_payroll_department": {},
+        "sg_payroll_name": {},
+        "sg_pin": {},
+        "sg_priority_task_list": {},
+        "sg_status_list": {},
+        "sg_username": {},
+        "sg_work_hours_per_day": {},
+        "sg_work_hours_per_week": {},
+        "tag_list": {},
+        "updated_at": {},
+        "updated_by": {},
+        "visible": {}
+    }
+}

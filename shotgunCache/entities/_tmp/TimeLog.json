@@ -1,0 +1,35 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "cached_display_name": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "date": {}, 
+        "description": {}, 
+        "duration": {}, 
+        "entity": {}, 
+        "id": {}, 
+        "project": {}, 
+        "sg_end_time": {}, 
+        "sg_exported_to_payroll": {}, 
+        "sg_start_time": {}, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "user": {}, 
+        "visible": {}
+    }
+}

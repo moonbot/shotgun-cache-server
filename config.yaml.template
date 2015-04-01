@@ -1,0 +1,70 @@
+---
+# Shotgun configuration for your site
+shotgun:
+    base_url: https://yoursite.shotgunstudio.com
+    script_name: shotgunEventDaemon
+    api_key: 841c9a51bf45e1872c3e5f2435dade67458bc858
+
+# Where the history state is tracked
+# This includes:
+#    - Latest event log entry processed
+#    - Hashes for each of the entity config files
+#    - List of which entities have been imported
+historyFile: "~/.shotgunCacheHistory"
+
+# Template for naming the elasticsearch indexes
+elasticIndexTemplate: shotgun-entity-{type}
+
+# Location of where the cache configuration folder is located
+entityConfigFolder: ./entityConfig
+
+# Main url for the cache server to listen for input from the monitor
+# or interact with the command line while active
+zmqListenUrl: tcp://0.0.0.0:5557
+
+# Whether to track stats on the performance of the
+# Cache server
+enableStats: true
+
+# Connection information for elasticsearch
+# This is provided directly to the elasticsearch constructor
+# So you can use:
+#    https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch
+# for reference on these options
+elasticsearch_connection:
+    hosts:
+        - localhost
+    sniff_on_start: true
+
+# How entities are intially imported or triggered for reimport
+entityImport:
+
+    # No. of processes to use when retreiving information from shotgun
+    # All calls to shotgun will be distributed among each of these
+    processes: 8
+
+    # Limit for each of the shotgun find requests
+    batchSize: 250
+
+    zmqPullUrl: tcp://0.0.0.0:5558
+    zmqPostUrl: tcp://0.0.0.0:5559
+
+# Settings for the shotgun Monitor
+monitor:
+    # Number of seconds to wait before requesting new events after each batch of events
+    # is done processing
+    fetch_interval: 1
+
+    # If the connection to shotgun fails, number of seconds to wait until we retry.
+    # This allows for occasional network hiccups, server restarts, application maintenance,
+    # etc.
+    conn_retry_sleep: 60
+
+    # Number of times to retry connection before logging an error level message (which
+    # sends an email in the default configuration)
+    max_conn_retries: 5
+
+    # Maimum number of events to fetch at once.
+    max_event_batch_size: 500
+
+    zmqPostUrl: tcp://0.0.0.0:5557

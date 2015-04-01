@@ -1,3 +1,6 @@
+entityConfig/
+config.yaml
+
 *.py[cod]
 
 # C extensions

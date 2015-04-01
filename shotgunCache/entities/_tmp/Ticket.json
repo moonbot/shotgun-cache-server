@@ -1,0 +1,83 @@
+{
+    "defaultMapping": {
+        "dynamic_templates": [
+            {
+                "template_1": {
+                    "match_mapping_type": "string", 
+                    "mapping": {
+                        "index": "not_analyzed", 
+                        "type": "string", 
+                        "omit_norms": true
+                    }, 
+                    "match": "*"
+                }
+            }
+        ]
+    }, 
+    "fields": {
+        "addressings_cc": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "addressings_to": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "attachments": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "cached_display_name": {}, 
+        "created_at": {}, 
+        "created_by": {}, 
+        "description": {}, 
+        "due_date": {}, 
+        "id": {}, 
+        "project": {}, 
+        "releases": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "replies": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "reply_content": {}, 
+        "revisions": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "sg_bid": {}, 
+        "sg_link": {}, 
+        "sg_milestone": {}, 
+        "sg_priority": {}, 
+        "sg_severity": {}, 
+        "sg_sprint": {}, 
+        "sg_status_list": {}, 
+        "sg_ticket_type": {}, 
+        "tag_list": {}, 
+        "tickets": {
+            "mapping": {
+                "include_in_parent": true, 
+                "type": "nested"
+            }
+        }, 
+        "time_logs_sum": {}, 
+        "title": {}, 
+        "updated_at": {}, 
+        "updated_by": {}, 
+        "visible": {}
+    }
+}
