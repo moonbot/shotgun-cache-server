@@ -117,9 +117,6 @@ class DatabaseController(object):
         self.importEntities(configsToImport)
 
     def importEntities(self, entityConfigs):
-        # TODO
-        # Force importing? Use the loaded history variable
-
         # indexTemplate = self.config['indexNameTemplate']
         LOG.debug("Importing {0} entity types".format(len(entityConfigs)))
 
@@ -133,6 +130,9 @@ class DatabaseController(object):
         importPullSocket = importPullContext.socket(zmq.PULL)
         importPullSocket.bind(importConfig['zmqPostUrl'])
 
+        # Tried using multiprocessing.Pool
+        # but had better luck with Processes directly
+        # due to using the importer class and instance methods
         processes = []
         numProcesses = importConfig['processes']
         for n in range(numProcesses):
@@ -220,6 +220,10 @@ class DatabaseController(object):
 
             if not len(activeWorkItemsPerType):
                 break
+
+        for proc in processes:
+            LOG.debug("Terminating import process: {0}".format(proc.pid))
+            proc.terminate()
 
         LOG.debug("Import finished")
         if importFailed:
