@@ -10,22 +10,17 @@ LOG = logging.getLogger(__name__)
 LOG.level = 10
 
 
-class ShotgunAPIWrapper(sg.Shotgun):
-    def _transform_inbound(self, data):
-        # Skip transforming inbound data so it correctly matches for our proxy
-        # TODO - maybe reimplement this elsewhere for elastic?
-        return data
 
 
 class ShotgunMonitor(object):
     eventSubTypes = ['New', 'Change', 'Retirement', 'Revival']
 
-    def __init__(self, zmqPostUrl, shotgunConfig, latestEventID=None,
+    def __init__(self, zmqPostUrl, shotgunConnector, latestEventID=None,
                  maxConnRetries=5, connRetrySleep=60, maxEventBatchSize=500,
                  fetchInterval=1, enableStats=True):
         super(ShotgunMonitor, self).__init__()
         self.zmqPostUrl = zmqPostUrl
-        self.shotgunConfig = shotgunConfig
+        self.shotgunConnector = shotgunConnector
         self.latestEventID = latestEventID
         self.maxConnRetries = maxConnRetries
         self.connRetrySleep = connRetrySleep
@@ -44,15 +39,12 @@ class ShotgunMonitor(object):
         self._loopStartTime = None
 
     def prepareEntityEvents(self, events):
-        # TODO
-        # Format this so it can be ready to pass to elasticsearch
-        # result = '{event[event_type]} {event_json}'.format(
-        #     event=event,
-        #     event_json=json.dumps(event, default=jsonConvert),
-        # )
         result = []
         for event in events:
-            result.append(('entityEvent', event))
+            result.append({
+                'type': 'entityEvent',
+                'data': event
+            })
         return result
 
     def start(self):
@@ -92,7 +84,7 @@ class ShotgunMonitor(object):
                 # Only report status for loops with events
                 if totalEventsInLoop:
                     self.postStat({
-                        'type': 'monitor_post',
+                        'statType': 'monitor_post',
                         'fetchInterval': self.fetchInterval,
                         'totalEvents': totalEventsInLoop,
                         'timeToPost': timeToPost,
@@ -100,7 +92,10 @@ class ShotgunMonitor(object):
 
     def postStat(self, statDict):
         if self.enableStats:
-            self.postItems([('stat', statDict)])
+            self.postItems([{
+                'type': 'stat',
+                'data': statDict
+            }])
 
     def loadInitialEventID(self):
         if self.latestEventID is None:
@@ -138,11 +133,7 @@ class ShotgunMonitor(object):
     def connect(self, force=False):
         if force or self.sg is None:
             LOG.debug("Connecting to Shotgun")
-            self.sg = ShotgunAPIWrapper(
-                self.shotgunConfig['url'],
-                self.shotgunConfig['scriptName'],
-                self.shotgunConfig['apiKey']
-            )
+            self.sg = self.shotgunConnector.getInstance()
         return self.sg
 
     def postItems(self, items):
