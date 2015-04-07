@@ -56,11 +56,13 @@ class EntityImporter(object):
                     entityConfig = self.entityConfigs[work['configType']]
                     entityCount = self.getEntityCount(entityConfig)
                     pageCount = int(math.ceil(entityCount / float(self.batchSize)))
+                    lastPageDiff = (pageCount * self.batchSize) - entityCount
                     result = {
                         'type': 'counts',
                         'data': {
                             'entityCount': entityCount,
                             'pageCount': pageCount,
+                            'lastPageDiff': lastPageDiff,
                         },
                         'work': work,
                     }

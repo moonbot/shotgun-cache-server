@@ -1,5 +1,6 @@
 import socket
 import time
+import datetime
 import zmq
 
 import logging
@@ -89,11 +90,12 @@ class ShotgunEventMonitor(object):
                     statData = {
                         'type': 'stat',
                         'data': {
-                            'statType': 'monitor_post',
+                            'type': 'shotgun_event_update',
                             'fetch_interval': self.fetch_interval,
-                            'totalEvents': totalEventsInLoop,
+                            'total_events': totalEventsInLoop,
                             # might not need this, most of the time below 1 ms
                             'duration': round(timeToPost * 1000, 3),
+                            'created_at': datetime.datetime.utcnow().isoformat(),
                         },
                     }
                     self.socket.send_pyobj(statData)

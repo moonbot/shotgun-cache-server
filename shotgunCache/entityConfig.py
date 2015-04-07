@@ -3,8 +3,11 @@ import sys
 import json
 import logging
 import hashlib
+import fnmatch
 
 from collections import Mapping, OrderedDict
+
+import utils
 
 __all__ = [
     'EntityConfig',
@@ -20,12 +23,14 @@ LOG.level = 10
 
 
 class EntityConfig(Mapping):
-    def __init__(self, type, configPath, previousHash, elasticIndex):
+    """
+    Config dictionary for a single entity type
+    """
+    def __init__(self, type, configPath, previousHash):
         self.type = type
         self.configPath = configPath
         self.hash = None
         self.previousHash = previousHash
-        self.elasticIndex = elasticIndex
 
         self.config = None
         self.loadConfig()
@@ -40,6 +45,9 @@ class EntityConfig(Mapping):
         return len(self.config)
 
     def needsUpdate(self):
+        """
+        Check if the config has changed
+        """
         if self.hash is None:
             return True
         elif self.hash != self.previousHash:
@@ -47,6 +55,9 @@ class EntityConfig(Mapping):
         return False
 
     def loadConfig(self):
+        """
+        Read the config from the json file
+        """
         LOG.debug("Loading Entity Config for type: {0}".format(self.type))
 
         with open(self.configPath, 'r') as f:
@@ -62,34 +73,47 @@ class EntityConfig(Mapping):
 
 
 class EntityConfigManager(object):
-    def __init__(self, configFolder, previousHashes, shotgunConnector, elasticIndexTemplate, elasticDefaultMapping):
+    """
+    Manages the entity config files storing the details of how
+    Shotgun Entities are stored in the database
+    """
+
+    def __init__(self, configFolder, previousHashes, shotgunConnector):
         super(EntityConfigManager, self).__init__()
         self.configFolder = configFolder
-        self.shotgunConnector = shotgunConnector
         self.previousHashes = previousHashes
-        self.elasticDefaultMapping = elasticDefaultMapping
-        self.configs = {}
-        self.schema = None
-        self.elasticIndexTemplate = elasticIndexTemplate
+        self.shotgunConnector = shotgunConnector
+
         self.sg = self.shotgunConnector.getInstance()
 
+        self.configs = {}
+        self.schema = None
+
     def load(self):
-        self.loadSchema()
+        self.loadShotgunSchema()
         for path in self.getConfigFilePaths():
             typ = os.path.basename(os.path.splitext(path)[0])
             config = EntityConfig(
                 typ,
                 path,
-                self.previousHashes.get(typ, None)
+                self.previousHashes.get(typ, None),
             )
             self.validateConfig(config)
             self.configs[config.type] = config
 
-    def loadSchema(self):
+    def loadShotgunSchema(self):
         LOG.debug("Loading Shotgun Schema")
         self.schema = self.sg.schema_read()
 
     def validateConfig(self, config):
+        """
+        Validate an entity config dictionary
+
+        Args:
+            config (dict): entity config dictionary
+        Raises:
+            ValueError
+        """
         if 'fields' not in config or not len(config['fields']):
             raise ValueError("No fields defined for '{0}' in {1}".format(config.type, config.configPath))
 
@@ -102,6 +126,11 @@ class EntityConfigManager(object):
                 raise ValueError("Field '{0}' for Type '{1}' missing from Shotgun schema, defined in {2}".format(field, config.type, config.configPath))
 
     def getConfigFilePaths(self):
+        """
+        Get a list of all config file paths containing entity configs
+        Returns:
+            list of str: file paths
+        """
         path = os.path.abspath(self.configFolder)
         result = []
         if not os.path.exists(path):
@@ -115,14 +144,62 @@ class EntityConfigManager(object):
         return result
 
     def getEntityTypes(self):
+        """
+        Get a list of all entity types we have configs for
+
+        Returns:
+            list of str: entity types
+        """
         return self.configs.keys()
 
-    def getConfigForEntity(self, type):
+    def getConfigForType(self, type):
+        """
+        Get the entity config instance for the supplied type
+        """
         return self.configs.__getitem__(type)
 
-    def generateEntityConfigFiles(self, types):
+    def generateEntityConfigFiles(self, types, indexTemplate=None, defaultDynamicTemplatesPerType=None, ignoreFields=[]):
+        """
+        Generate the entity config json files for the supplied shotgun entity types
+
+        Args:
+            types (list of str): List of Shotgun Entity Types
+            indexTemplate (str): Template for the elastic index name
+                supplied format keywords:
+                    type - Shotgun type
+                Ex:
+                    shotguncache-entity-{type}
+            defaultDynamicTemplatesPerType (dict): Dictionary of elastic dynamic templates.
+                templates stored inside the 'all' key will be applied to all entity types.
+                Ex:
+                {
+                    'all': [{
+                                'template_1': {
+                                    "match_mapping_type": "string",
+                                    "mapping": {
+                                        "index": "not_analyzed",
+                                        "type": "string",
+                                        "omit_norms": true
+                                    },
+                                    "match": "*"
+                                }
+                            }]
+
+                }
+            ignoreFields (list of str): global list of field names to exclude.
+                These can use wildcards using fnmatch
+                Ex:
+                    created_*
+                    cached_display_name
+
+        Raises:
+            ValueError
+
+        """
         LOG.debug("Reading Shotgun schema")
         schema = self.sg.schema_read()
+
+        defauiltDynamicTemplates = defaultDynamicTemplatesPerType.get('all', {})
 
         LOG.debug("Creating config files")
         for sgType in types:
@@ -134,17 +211,26 @@ class EntityConfigManager(object):
 
             entityConfig = OrderedDict()
 
-            index = self.elasticIndexTemplate.format(type=sgType.lower())  # Elastic requires lowercase
+            index = indexTemplate.format(type=sgType.lower())  # Elastic requires lowercase
             entityConfig['index'] = index
 
-            defaultMapping = self.elasticDefaultMapping
-            if defaultMapping:
-                entityConfig['defaultMapping'] = defaultMapping
+            dynamicTemplates = defauiltDynamicTemplates[:]
+            dynamicTemplates.extend(defaultDynamicTemplatesPerType.get(sgType, []))
+            entityConfig['dynamic_templates'] = dynamicTemplates
 
             typeSchema = schema[sgType]
-            # print envtools.format_dict(typeSchema)
             fields = typeSchema.keys()
-            fieldsConfig = entityConfig['fields'] = OrderedDict()
+
+            if ignoreFields:
+                def excludeIgnoredFields(field):
+                    for pat in ignoreFields:
+                        result = fnmatch.fnmatch(field, pat)
+                        if result:
+                            return False
+                    return True
+                fields = filter(excludeIgnoredFields, fields)
+
+            fieldsConfig = OrderedDict()
             for field in sorted(fields):
                 fieldConfig = {}
                 fieldSchema = typeSchema[field]
@@ -158,6 +244,7 @@ class EntityConfigManager(object):
                     continue
 
                 fieldsConfig[field] = fieldConfig
+            entityConfig['fields'] = fieldsConfig
 
             if not os.path.exists(destFolderPath):
                 os.makedirs(destFolderPath)

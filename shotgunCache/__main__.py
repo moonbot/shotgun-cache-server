@@ -100,7 +100,12 @@ class Parser(object):
 
         configPath = parseResults['config']
         controller = shotgunCache.DatabaseController(configPath)
-        controller.entityConfigManager.generateEntityConfigFiles(parseResults['entityTypes'])
+        controller.entityConfigManager.generateEntityConfigFiles(
+            parseResults['entityTypes'],
+            indexTemplate=controller.config['elasticEntityIndexTemplate'],
+            defaultDynamicTemplatesPerType=controller.config['generateEntityConfig']['elasticDynamicTemplates'],
+            ignoreFields=controller.config['generateEntityConfig']['fieldPatternsToIgnore'],
+        )
 
     def parse_rebuild(self, parseResults):
         pass

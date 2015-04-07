@@ -26,6 +26,7 @@ $ ./bin/kibana
 
 ### Required Python Modules
 - [yaml](http://pyyaml.org/)
+- [nesting](https://pypi.python.org/pypi/nesting/0.1.0)
 - [ZeroMQ](http://zeromq.org/bindings:python)
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
 
@@ -70,3 +71,20 @@ To do this just run this command in a separate process:
 ```
 $ shotgunCache triggerRebuild -h localhost Asset Shot
 ```
+
+
+
+
+#### TODO
+
+- Add automatic EventLogEntry meta field handling
+- Implement DB 
+- How to handle stat elastic index updates?
+	- No backup of data?
+- Should I provide default mappings and settings for the stats?
+- Need to keep a list of api tokens registered in shotgun
+
+
+- Counts aren't matching up between imported items and totals
+- Having trouble creating a task with an new asset in dev project
+
