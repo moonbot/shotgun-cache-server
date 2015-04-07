@@ -42,6 +42,7 @@ class DatabaseController(object):
         self._init_entityConfigManager()
         self._init_elastic()
         self._init_monitor()
+        self._init_entityImportManager()
 
         self.sg = self.shotgunConnector.getInstance()
 
@@ -91,6 +92,16 @@ class DatabaseController(object):
         self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
         self.monitorProcess.daemon = True
 
+    def _init_entityImportManager(self):
+        importConfig = self.config['importConfig']
+        self.entityImportManager = entityImporter.EntityImportManager(
+            controller=self,
+            zmqPullUrl=importConfig['zmqPullUrl'],
+            zmqPostUrl=importConfig['zmqPostUrl'],
+            processes=importConfig['processes'],
+            batchSize=importConfig['batchSize'],
+        )
+
     def _init_elastic(self):
         self.elastic = elasticsearch.Elasticsearch(**self.config['elasticsearch_connection'])
 
@@ -120,146 +131,7 @@ class DatabaseController(object):
             LOG.info("No entity imports required")
             return
 
-        self.importEntities(configsToImport)
-
-    def importEntities(self, entityConfigs):
-        # indexTemplate = self.config['indexNameTemplate']
-        LOG.debug("Importing {0} entity types".format(len(entityConfigs)))
-        st = time.time()
-
-        importConfig = self.config['entityImport']
-
-        importPostContext = zmq.Context()
-        importPostSocket = importPostContext.socket(zmq.PUSH)
-        importPostSocket.bind(importConfig['zmqPullUrl'])
-
-        importPullContext = zmq.Context()
-        importPullSocket = importPullContext.socket(zmq.PULL)
-        importPullSocket.bind(importConfig['zmqPostUrl'])
-
-        # Tried using multiprocessing.Pool
-        # but had better luck with Processes directly
-        # due to using the importer class and instance methods
-        processes = []
-        numProcesses = importConfig['processes']
-        for n in range(numProcesses):
-            importer = entityImporter.EntityImporter(
-                shotgunConnector=self.shotgunConnector,
-                zmqPullUrl=importConfig['zmqPullUrl'],
-                zmqPostUrl=importConfig['zmqPostUrl'],
-                entityConfigs=entityConfigs,
-                batchSize=importConfig['batchSize'],
-            )
-            proc = multiprocessing.Process(target=importer.start)
-            proc.start()
-            processes.append(proc)
-            LOG.debug("Launched process {0}/{1}: {2}".format(n + 1, numProcesses, proc.pid))
-
-        # Give time for all the workers to connect
-        time.sleep(1)
-
-        workID = 0
-        activeWorkItemsPerType = {}
-        for config in entityConfigs:
-            work = {'type': 'getPageCount', 'id': workID, 'configType': config.type}
-            activeWorkItemsPerType.setdefault(config.type, []).append(workID)
-            importPostSocket.send_pyobj(work)
-            workID += 1
-
-            # We clear the old index out, before rebuilding the data
-            # All data should be stored in shotgun, so we will never lose data
-            if self.elastic.indices.exists(index=config['index']):
-                LOG.debug("Deleting existing elastic index: {0}".format(config['index']))
-                self.elastic.indices.delete(index=config['index'])
-
-        importFailed = False
-        countsPerType = {}
-        while True:
-            result = importPullSocket.recv_pyobj()
-            configType = result['work']['configType']
-            activeWorkItems = activeWorkItemsPerType[configType]
-            workID = result['work']['id']
-            activeWorkItems.remove(workID)
-
-            if result['type'] == 'exception':
-                LOG.error("Import Failed for type '{type}'.\n{tb}".format(
-                    type=result['work']['configType'],
-                    tb=result['data']['traceback']
-                ))
-                workID = result['work']['id']
-                importFailed = True
-
-            elif result['type'] == 'counts':
-                counts = result['data']
-                countsPerType[configType] = counts
-
-                for page in range(counts['pageCount']):
-                    work = {
-                        'type': 'getEntities',
-                        'id': workID,
-                        'page': page+1,
-                        'configType': result['work']['configType']
-                    }
-                    importPostSocket.send_pyobj(work)
-                    activeWorkItems.append(workID)
-                    workID += 1
-
-            elif result['type'] == 'entitiesImported':
-                entities = result['data']['entities']
-                page = result['work']['page']
-                pageCount = countsPerType[configType]['pageCount']
-
-                countsPerType[configType].setdefault('importCount', 0)
-                countsPerType[configType]['importCount'] += len(entities)
-                # TODO
-                # curr count is not right
-                LOG.info("Imported {currCount}/{totalCount} entities for type '{typ}' on page {page}/{pageCount}".format(
-                    currCount=countsPerType[configType]['importCount'],
-                    totalCount=countsPerType[configType]['entityCount'],
-                    typ=configType,
-                    page=result['work']['page'],
-                    pageCount=pageCount,
-                ))
-
-                entityConfig = self.entityConfigManager.getConfigForType(configType)
-                self.postEntitiesToElastic(entityConfig, entities)
-
-                if not len(activeWorkItems):
-                    LOG.info("Imported all entities for type '{0}'".format(configType))
-
-                    self.history.setdefault('configHashes', {})[configType] = entityConfig.hash
-                    self.history.setdefault('loaded', []).append(configType)
-                    self.history['loaded'] = list(set(self.history['loaded']))
-                    self.writeHistoryToDisk()
-
-                    activeWorkItemsPerType.pop(configType)
-            else:
-                raise ValueError("Unkown result type from importer: {0}".format(result['type']))
-
-            if not len(activeWorkItemsPerType):
-                break
-
-        for proc in processes:
-            LOG.debug("Terminating import process: {0}".format(proc.pid))
-            proc.terminate()
-
-        timeToImport = (time.time() - st) * 1000  # ms
-        stat = {
-            'type': 'import_entities',
-            'no_types_imported': len(entityConfigs),
-            'entity_types': [c.type for c in entityConfigs],
-            'total_entities_imported': sum([c['entityCount'] for c in countsPerType.values()]),
-            'entity_details': dict([(t, c) for t, c in countsPerType.items()]),
-            'duration': round(timeToImport, 3),
-            'created_at': datetime.datetime.utcnow().isoformat(),
-            # Summarize and page counts shotgun calls
-            'total_shotgun_calls': sum([c['pageCount'] for c in countsPerType.values()]) + len(entityConfigs),
-        }
-        self.postStatToElastic(stat)
-
-        LOG.debug("Import finished")
-        if importFailed:
-            raise IOError("Import Process failed for one ore more entities, check log for details")
+        self.entityImportManager.importEntities(configsToImport)
 
     def postStatToElastic(self, statDict):
         if not self.config['enableStats']:
