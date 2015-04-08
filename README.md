@@ -26,7 +26,6 @@ $ ./bin/kibana
 
 ### Required Python Modules
 - [yaml](http://pyyaml.org/)
-- [nesting](https://pypi.python.org/pypi/nesting/0.1.0)
 - [ZeroMQ](http://zeromq.org/bindings:python)
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
 
@@ -72,8 +71,56 @@ To do this just run this command in a separate process:
 $ shotgunCache triggerRebuild -h localhost Asset Shot
 ```
 
+## Validating the cache
+
+Validating the cache can be performed in two ways
+- Count Validation
+- Data Validation
+
+NOTE: Any EventLogEntry's recorded during data/count retrieval is factored into the validation.
+This fixes the potential loopholes created by the limitation of not being able to load data from a snapshotted point in time.
 
 
+### Count Validation
+This is the quickest form of validation, and the most lightweight.  
+It simply retrieves the current entity counts that should be cached from shotgun and compares it to the counts of what's actually stored in the cache db.
+
+Because this is a lightweight and fast check, by default all entity types will be validated in this mode.
+
+```
+$ shotgunCache validateCounts
+```
+
+You can supply specific entity types to check separated by spaces
+
+```
+$ shotgunCache validateCounts Asset Shot
+```
+
+#### Data Validation
+This is a much heavier process, and can take a lot longer.  
+It actually retrieves data from shotgun and compares it to the data stored in the cache db.
+
+By default, this validates the data for all entities, however, the check is limited to the last 500 updated entities.
+Unless specified, all cached fields are checked.
+
+```
+$ shotgunCache validateData
+```
+
+You can supply specific entity types to check separated by spaces
+
+```
+$ shotgunCache validateData Asset Shot
+```
+
+You can also supply different filters or limits.
+WARNING: It is advised that you avoid doing complete data validation over large amounts of entities because it causes a heavy load on Shotgun's servers.
+Instead restrict your validation to a smaller subset of entities.
+
+```
+$ shotgunCache validateData --filters [['id','greater_than', 1000], ['id','less_than', 4000]] --order [{'field_name':'created_at','direction':'asc'}] --fields ['id','type'] --limit 1000 --page 2
+```
 
 #### TODO
 
@@ -87,4 +134,9 @@ $ shotgunCache triggerRebuild -h localhost Asset Shot
 
 - Counts aren't matching up between imported items and totals
 - Having trouble creating a task with an new asset in dev project
+- Delete indices for entity types that are no longer cached?
 
+- Create a utility to diff the cache with shotgun
+- Create a utility that can signal a rebuild of specific entity types while the controller is running
+- Project specific schema for entity config manager?
+- Binary support for images, thumbnails, etc...

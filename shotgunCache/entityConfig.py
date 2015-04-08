@@ -1,13 +1,10 @@
 import os
 import sys
-import json
 import logging
 import hashlib
 import fnmatch
-
+import json
 from collections import Mapping, OrderedDict
-
-import utils
 
 __all__ = [
     'EntityConfig',
@@ -15,11 +12,6 @@ __all__ = [
 ]
 
 LOG = logging.getLogger(__name__)
-LOG.level = 10
-
-# FUTURE
-# Better place to create shotgun connection than in EntityConfigManager?
-# Project specific schema?
 
 
 class EntityConfig(Mapping):
@@ -77,14 +69,12 @@ class EntityConfigManager(object):
     Manages the entity config files storing the details of how
     Shotgun Entities are stored in the database
     """
-
-    def __init__(self, configFolder, previousHashes, shotgunConnector):
+    def __init__(self, config, previousHashes):
         super(EntityConfigManager, self).__init__()
-        self.configFolder = configFolder
+        self.config = config
         self.previousHashes = previousHashes
-        self.shotgunConnector = shotgunConnector
 
-        self.sg = self.shotgunConnector.getInstance()
+        self.sg = self.config.createShotgunConnection()
 
         self.configs = {}
         self.schema = None
@@ -131,7 +121,7 @@ class EntityConfigManager(object):
         Returns:
             list of str: file paths
         """
-        path = os.path.abspath(self.configFolder)
+        path = os.path.abspath(self.config['entityConfigFolder'])
         result = []
         if not os.path.exists(path):
             raise OSError("Entity config folder path doesn't exist: {0}".format(path))
@@ -202,11 +192,12 @@ class EntityConfigManager(object):
         defauiltDynamicTemplates = defaultDynamicTemplatesPerType.get('all', {})
 
         LOG.debug("Creating config files")
+        result = []
         for sgType in types:
             if sgType not in schema:
                 raise ValueError("Missing shotgun entity type: {0}".format(sgType))
 
-            destFolderPath = os.path.abspath(self.configFolder)
+            destFolderPath = os.path.abspath(self.config['entityConfigFolder'])
             destPath = os.path.join(destFolderPath, '{type}.json'.format(type=sgType))
 
             entityConfig = OrderedDict()
@@ -239,8 +230,7 @@ class EntityConfigManager(object):
                 if fieldDataType == 'multi_entity':
                     fieldConfig['mapping'] = {'type': 'nested', 'include_in_parent': True}
                 elif fieldDataType == 'image':
-                    # Don't store these yet
-                    # TODO binary support
+                    # Not supported yet
                     continue
 
                 fieldsConfig[field] = fieldConfig
@@ -250,4 +240,6 @@ class EntityConfigManager(object):
                 os.makedirs(destFolderPath)
             with open(destPath, 'w') as f:
                 f.write(json.dumps(entityConfig, indent=4))
-            LOG.info("{0} Entity Config Template: {1}".format(sgType, destPath))
+            result.append((sgType, destPath))
+
+        return result

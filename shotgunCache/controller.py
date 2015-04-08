@@ -1,20 +1,11 @@
-import os
-import zmq
-import multiprocessing
-import yaml
-import time
-import itertools
-import re
-import datetime
-import json
-
 import logging
+import datetime
+import multiprocessing
 
-import mbotenv  # For paths, TODO
+import zmq
 
 import entityConfig
-import elasticsearch
-import entityImporter
+import initialImport
 import monitor
 import utils
 
@@ -22,60 +13,31 @@ __all__ = [
     'DatabaseController',
 ]
 
-
 LOG = logging.getLogger(__name__)
-LOG.level = 10
-
-# FUTURE
-# Create a utility to diff the cache with shotgun
-# Create a utility that can signal a rebuild of
-#   specific entity types while the controller is running
 
 
 class DatabaseController(object):
-    def __init__(self, configPath=None):
+    """
+    Main Database controller
+    Launches all other processes and coordinates communication
+    """
+    def __init__(self, config):
         super(DatabaseController, self).__init__()
-        self.config = self.read_config(configPath)
+        self.config = config
 
-        self._load_history()
-        self._init_shotgunConnector()
+        self.elastic = self.config.createElasticConnection()
+        self.sg = self.config.createShotgunConnection()
+        self.firstEventPostSinceImport = False
+        self.history = utils.History(self.config['historyFile'])
+
         self._init_entityConfigManager()
-        self._init_elastic()
         self._init_monitor()
-        self._init_entityImportManager()
-
-        self.sg = self.shotgunConnector.getInstance()
-
-    def _init_shotgunConnector(self):
-        connector = utils.ShotgunConnector(
-            self.config['shotgun']
-        )
-        self.shotgunConnector = connector
-
-    def _load_history(self):
-        result = {}
-        historyPath = self.config['historyFile']
-        historyPath = os.path.expanduser(historyPath)
-        historyPath = os.path.abspath(historyPath)
-        self.historyPath = historyPath
-
-        if os.path.exists(historyPath):
-            with open(historyPath, 'r') as f:
-                result = yaml.load(f)
-                if result is None:
-                    result = {}
-
-        self.history = result
-
-    def read_config(self, path):
-        result = yaml.load(open(path, 'r').read())
-        return result
+        self._init_initialImportManager()
 
     def _init_entityConfigManager(self):
         self.entityConfigManager = entityConfig.EntityConfigManager(
-            configFolder=self.config['entityConfigFolder'],
+            config=self.config,
             previousHashes=self.history.get('configHashes', {}),
-            shotgunConnector=self.shotgunConnector,
         )
 
     def _init_monitor(self):
@@ -84,85 +46,97 @@ class DatabaseController(object):
         self.monitorSocket.bind(self.config['zmqListenUrl'])
 
         self.monitor = monitor.ShotgunEventMonitor(
+            config=self.config,
             latestEventLogEntry=self.history.get('latestEventLogEntry', None),
-            shotgunConnector=self.shotgunConnector,
-            zmqPostUrl=self.config['zmqListenUrl'],
-            **self.config['monitor']
         )
         self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
         self.monitorProcess.daemon = True
 
-    def _init_entityImportManager(self):
-        importConfig = self.config['importConfig']
-        self.entityImportManager = entityImporter.EntityImportManager(
+    def _init_initialImportManager(self):
+        self.initialImportManager = initialImport.InitialImportManager(
+            config=self.config,
             controller=self,
-            zmqPullUrl=importConfig['zmqPullUrl'],
-            zmqPostUrl=importConfig['zmqPostUrl'],
-            processes=importConfig['processes'],
-            batchSize=importConfig['batchSize'],
         )
 
-    def _init_elastic(self):
-        self.elastic = elasticsearch.Elasticsearch(**self.config['elasticsearch_connection'])
-
     def start(self):
+        LOG.info("Starting Up Cache")
         self.entityConfigManager.load()
         if not len(self.entityConfigManager.configs):
             raise IOError("No entity configs found to cache in {0}".format(self.config['entityConfigFolder']))
 
         self.monitor.setEntityTypes(self.entityConfigManager.getEntityTypes())
         self.monitorProcess.start()
-        self.importChangedEntities()
         self.run()
 
-    def getOutOfDateConfigs(self):
-        result = []
-        for c in self.entityConfigManager.configs.values():
-            if c.needsUpdate() or c.type not in self.history.get('loaded', []):
-                result.append(c)
-                LOG.info("{0} Config Updated".format(c.type))
-        return result
+    def run(self):
+        LOG.info("Starting Main Event Loop")
+        while True:
+            work = self.monitorSocket.recv_pyobj()
 
-    def importChangedEntities(self):
-        LOG.debug("Importing Changed Entities")
+            if not isinstance(work, dict):
+                raise TypeError("Invalid work item, expected dict: {0}".format(work))
 
-        configsToImport = self.getOutOfDateConfigs()
-        if not len(configsToImport):
-            LOG.info("No entity imports required")
+            if LOG.getEffectiveLevel() < 10:
+                # Only if we really want it
+                LOG.debug("Work: \n" + utils.prettyJson(work))
+
+            meth_name = 'handle_{0}'.format(work['type'])
+            if hasattr(self, meth_name):
+                getattr(self, meth_name)(work)
+            else:
+                raise ValueError("Unhandled work type: {0}".format(work['type']))
+
+    def handle_monitorStarted(self, work):
+        # We wait until the monitor signals that it's running
+        # this way we don't miss any events that occur while importing
+        self.performInitialImport()
+
+    def handle_stat(self, work):
+        if self.config['enableStats']:
+            LOG.debug("Posting Stat: {0}".format(work['data']['type']))
+
+    def handle_eventLogEntries(self, work):
+        eventLogEntries = work['data']['entities']
+        LOG.info("Posting {0} Events".format(len(eventLogEntries)))
+        self.post_eventLogEntries(eventLogEntries)
+
+    def handle_reloadEntities(self, work):
+        entityTypes = work['data'].get('entityTypes', [])
+        if entityTypes:
+            LOG.info("Performing initial import again for {0} entity types".format(len(entityTypes)))
+            # Reload only the supplied entity types
+            configs = [self.entityConfigManager.getConfigForType(t) for t in entityTypes]
+            self.initialImportManager.importEntities(configs)
+        else:
+            LOG.info("Performing initial import again".format(len(entityTypes)))
+            # Reload entities that are out not loaded or config has changed)
+            self.performInitialImport()
+
+    def handle_latestEventLogEntry(self, work):
+        LOG.debug("Setting Latest Event Log Entry: {0}".format(work['data']['entity']))
+        self.history['latestEventLogEntry'] = work['data']['entity']
+        self.history.save()
+
+    def performInitialImport(self):
+        configs = self.entityConfigManager.configs.values()
+
+        configsToLoad = []
+        configsToLoad.extend(filter(lambda c: c.needsUpdate(), configs))
+        configsToLoad.extend(filter(lambda c: c.type not in self.history.get('cachedEntityTypes', {}), configs))
+
+        if not len(configsToLoad):
+            LOG.info("All entity types have been imported.")
             return
 
-        self.entityImportManager.importEntities(configsToImport)
+        LOG.info("Importing {0} entity types into the cache".format(len(configsToLoad)))
+        self.initialImportManager.importEntities(configsToLoad)
+        LOG.info("Initial entity import complete!")
+        self.firstEventPostSinceImport = True
 
-    def postStatToElastic(self, statDict):
-        if not self.config['enableStats']:
-            return
-
-        LOG.debug("Posting stat: {0}".format(statDict['type']))
-        statIndex = self.config['elasticStatIndexTemplate'].format(type=statDict['type'])
-        if not self.elastic.indices.exists(index=statIndex):
-            # TODO
-            self.elastic.indices.create(index=statIndex, body={})
-        self.elastic.index(index=statIndex, doc_type=statDict['type'], body=statDict)
-
-    def buildElasticFieldMappings(self, entityConfig):
-        typeMappings = {}
-        typeMappings.setdefault('dynamic_templates', entityConfig.get('dynamic_templates', []))
-
-        for field, settings in entityConfig.get('fields', {}).items():
-            if 'mapping' in settings:
-                prop = typeMappings.setdefault('properties', {})
-                prop[field] = settings['mapping']
-
-        result = {
-            entityConfig.type.lower(): typeMappings,
-        }
-
-        return result
-
-    def postEntitiesToElastic(self, entityConfig, entities):
+    def post_entities(self, entityConfig, entities):
         requests = []
 
-        # TODO (bchapman) Could remove a few calls to elastic by caching the exists information
+        LOG.debug("Posting entities")
         if not self.elastic.indices.exists(index=entityConfig['index']):
             mappings = self.buildElasticFieldMappings(entityConfig)
 
@@ -207,11 +181,13 @@ class DatabaseController(object):
                     LOG.exception(response['index']['error'])
             raise IOError("Errors occurred creating entities")
 
-    def postEventLogEntriesToElastic(self, eventLogEntries):
+    def post_eventLogEntries(self, eventLogEntries):
 
-        print '-- eventLogEntries --'
-        print json.dumps(eventLogEntries, sort_keys=True, indent=4, separators=(',', ': '))
-        print
+        # print '-- eventLogEntries --'
+        # print json.dumps(eventLogEntries, sort_keys=True, indent=4, separators=(',', ': '))
+        # print
+
+        eventLogEntries = self.filterEventsBeforeImport(eventLogEntries)
 
         requests = []
         for entry in eventLogEntries:
@@ -219,173 +195,64 @@ class DatabaseController(object):
             entityConfig = self.entityConfigManager.getConfigForType(entityType)
 
             meta = entry['meta']
-            # TODO
-            # Is this correct?
-            if entry['entity']:
-                _id = entry['entity']['id']
-            else:
-                _id = meta['entity_id']
 
             headerInfo = {
                 '_index': entityConfig['index'],
                 '_type': entityType.lower(),
-                '_id': _id,
+                '_id': entry['entity']['id'] if entry['entity'] else meta['entity_id'],
             }
 
-            if changeType == 'Change':
-                header = {'update': headerInfo}
-
-                attrName = entry['attribute_name']
-                if attrName not in entityConfig['fields']:
-                    # TODO
-                    # Should this be added the filters?
-                    LOG.debug("Untracked field updated: {0}".format(attrName))
-                    continue
-
-                if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
-                    if 'added' in meta:
-                        val = [utils.getBaseEntity(e) for e in meta['added']]
-                        body = {
-                            "script": "ctx._source.{0} += item".format(entry['attribute_name']),
-                            "params": {
-                                "item": val,
-                            }
-                        }
-                    elif 'new_value' in meta:
-                        val = meta['new_value']
-                        if val is not None and isinstance(val, dict):
-                            val = utils.getBaseEntity(val)
-                        if isinstance(val, dict):
-                            body = {
-                                "doc": val
-                            }
-                        else:
-                            body = {
-                                'doc': {
-                                    attrName: val
-                                }
-                            }
-                else:
-                    val = meta['new_value']
-                    body = {
-                        "doc": {
-                            attrName: val
-                        }
-                    }
-
-                requests.extend([header, body])
-
-                if 'updated_at' in entityConfig['fields']:
-                    body = {
-                        "doc": {
-                            'updated_at': entry['created_at'],
-                        }
-                    }
-                    requests.extend([header, body])
-
-                if 'updated_at' in entityConfig['fields']:
-                    body = {
-                        "doc": {
-                            'updated_by': utils.getBaseEntity(entry['user']),
-                        }
-                    }
-                    requests.extend([header, body])
-
-
-            elif changeType == 'New':
-                header = {'index': headerInfo}
-                body = {'type': meta['entity_type'], 'id': meta['entity_id']}
-
-                # Load the default values for each field
-                for field in entityConfig['fields']:
-                    fieldSchema = self.entityConfigManager.schema[entityType][field]
-
-                    if 'data_type' not in fieldSchema:
-                        # No data_type for visible field
-                        fieldDefault = None
-                    else:
-                        fieldType = fieldSchema['data_type']['value']
-                        fieldDefault = self.config['shotgunFieldTypeDefaults'].get(fieldType, None)
-
-                    body.setdefault(field, fieldDefault)
-
-                if 'created_at' in entityConfig['fields']:
-                    body['created_at'] = entry['created_at']
-                if 'created_by' in entityConfig['fields']:
-                    body['created_by'] = utils.getBaseEntity(entry['user'])
-
-                if 'updated_at' in entityConfig['fields']:
-                    body['updated_at'] = entry['created_at']
-                if 'updated_by' in entityConfig['fields']:
-                    body['updated_by'] = utils.getBaseEntity(entry['user'])
-
-                # TODO
-                # How to handle date updated / created fields
-
-                print("new header: {0}".format(header)) # TESTING
-                print("new body: {0}".format(body)) # TESTING
-                requests.extend([header, body])
-
-            elif changeType == 'Retirement':
-                header = {'delete': headerInfo}
-                requests.extend([header])
-
-                if 'updated_at' in entityConfig['fields']:
-                    body = {
-                        "doc": {
-                            'updated_at': entry['created_at'],
-                        }
-                    }
-                    requests.extend([header, body])
-
-                if 'updated_at' in entityConfig['fields']:
-                    body = {
-                        "doc": {
-                            'updated_by': utils.getBaseEntity(entry['user']),
-                        }
-                    }
-                    requests.extend([header, body])
-
-            elif changeType == 'Revival':
-                # This is one of the few times
-                # we have to go and retrieve the information from shotgun
-                header = {'index': headerInfo}
-                filters = [['id', 'is', entry['entity']['id']]]
-                filters.extend(entityConfig.get('filters', []))
-                # TODO
-                # I could batch these for multiple revives per batch...
-                body = self.sg.find_one(entityType, filters, entityConfig['fields'].keys())
-                requests.extend([header, body])
-
+            meth_name = 'generateRequests_{0}'.format(changeType)
+            if hasattr(self, meth_name):
+                getattr(self, meth_name)(entry, headerInfo)
             else:
-                raise TypeError("Unkown change type: {0}".format(changeType))
+                raise ValueError("Unhandled change type: {0}".format(changeType))
 
-        print '-- requests --'
-        print json.dumps(requests, sort_keys=True, indent=4, separators=(',', ': '))
-        print
+        # print '-- requests --'
+        # print json.dumps(requests, sort_keys=True, indent=4, separators=(',', ': '))
+        # print
 
+        if not len(requests):
+            LOG.debug("No requests for elastic")
+            return
 
         responses = self.elastic.bulk(body=requests)
-        submitTime = datetime.datetime.utcnow()
+        submitFinishTime = datetime.datetime.utcnow()
 
-        print '-- responses --'
-        print json.dumps(responses, sort_keys=True, indent=4, separators=(',', ': '))
-        print
+        # print '-- responses --'
+        # print json.dumps(responses, sort_keys=True, indent=4, separators=(',', ': '))
+        # print
 
+        # It's possible to run into a few errors here when shotgun events occurred while importing
+        # Someone could modify and then delete an entity before the import is finished
+        # while importing, we capture this change
+        # then after importing, we apply the modification from the events that occured while importing
+        # however, we can't apply the modification because the entity no longer exists
+        # So on the first event post after importing we ignore DocumentMissingException's
         if responses['errors']:
-            for response in responses['items']:
+            ignoreError = False
+            for request, response in zip(requests, responses['items']):
                 for responseEntry in response.values():
                     if responseEntry.get('error', None):
-                        LOG.error(responseEntry['error'])
-            raise IOError("Errors occurred creating entities")
+                        errStr = responseEntry['error']
+                        if errStr.startswith('DocumentMissingException') and self.firstEventPostSinceImport:
+                            LOG.warning("Got DocumentMissingException error, but ignoring because it was during import")
+                            ignoreError = True
+                        else:
+                            LOG.error(errStr)
+            if not ignoreError:
+                raise IOError("Errors occurred creating entities")
+
+        if self.firstEventPostSinceImport:
+            self.firstEventPostSinceImport = False
 
         if self.config['enableStats']:
             # Post the min/max/avg delay in milliseconds
             delays = []
             for entry in eventLogEntries:
                 createdTime = entry['created_at']
-                createdTime = datetime.datetime(*map(int, re.split('[^\d]', createdTime)[:-1]))
-                diff = submitTime - createdTime
+                createdTime = utils.convertStrToDatetime(createdTime)
+                diff = submitFinishTime - createdTime
                 diff_ms = diff.microseconds / float(1000)
                 delays.append(diff_ms)
 
@@ -397,51 +264,150 @@ class DatabaseController(object):
                 'avg_shotgun_to_cache_delay': avg,
                 'elastic_requests': len(requests),
                 'elastic_bulk_took': responses['took'],
-                'created_at': submitTime.isoformat(),
+                'created_at': submitFinishTime.isoformat(),
             }
-            self.postStatToElastic(stat)
+            self.post_stat(stat)
 
-    def reimportEntities(self, entityTypes):
-        LOG.info("Reimporting entities for types: {0}".format(', '.join(entityTypes)))
-        entityConfigs = [self.entityConfigManager.getConfigForType(t) for t in entityTypes]
-        self.importEntities(entityConfigs)
+    def post_stat(self, statDict):
+        if not self.config['enableStats']:
+            return
 
-    def run(self):
-        LOG.debug("Starting Main Event Loop")
-        while True:
-            # TODO
-            # Exception handling
-            # Work is a tuple of (workType, data)
-            work = self.monitorSocket.recv_pyobj()
+        LOG.debug("Posting stat: {0}".format(statDict['type']))
+        statIndex = self.config['elasticStatIndexTemplate'].format(type=statDict['type'])
+        if not self.elastic.indices.exists(index=statIndex):
+            self.elastic.indices.create(index=statIndex, body={})
+        self.elastic.index(index=statIndex, doc_type=statDict['type'], body=statDict)
 
-            if work is None:
+    def filterEventsBeforeImport(self, eventLogEntries):
+        result = []
+        for entry in eventLogEntries:
+            entityType, changeType = entry['event_type'].split('_', 3)[1:]
+            importTimestamps = self.history['cachedEntityTypes'][entityType]
+            initialImportTimestamp = utils.convertStrToDatetime(importTimestamps['startImportTimestamp'])
+
+            # Ignore old event log entries
+            entryTimestamp = utils.convertStrToDatetime(entry['created_at'])
+            if entryTimestamp < initialImportTimestamp:
+                LOG.debug("Ignoring EventLogEntry occurring before initial import of '{0}': {1}".format(entityType, entry['id']))
+                if LOG.getEffectiveLevel() < 10:
+                    LOG.debug("Old Entry: \n" + utils.prettyJson(entry))
                 continue
 
-            if not isinstance(work, dict):
-                raise TypeError("Invalid work item, expected dict: {0}".format(work))
+            result.append(entry)
+        return result
 
-            if work['type'] == 'latestEventLogEntry':
-                self.updatelatestEventLogEntry(work['data']['entity'])
-            elif work['type'] == 'reimportEntities':
-                # TODO
-                # Create utility and test this
-                self.reimportEntity(work['data']['entityTypes'])
-            elif work['type'] == 'eventLogEntries':
-                self.postEventLogEntriesToElastic(work['data']['entities'])
-            elif work['type'] == 'stat':
-                self.postStatToElastic(work['data'])
+    def generateRequests_Change(self, entry, headerInfo):
+        requests = []
+
+        header = {'update': headerInfo}
+        meta = entry['meta']
+
+        attrName = entry['attribute_name']
+        if attrName not in entityConfig['fields']:
+            LOG.debug("Untracked field updated: {0}".format(attrName))
+            return
+
+        if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
+            if 'added' in meta:
+                val = [utils.getBaseEntity(e) for e in meta['added']]
+                body = {
+                    "script": "ctx._source.{0} += item".format(entry['attribute_name']),
+                    "params": {
+                        "item": val,
+                    }
+                }
+            elif 'new_value' in meta:
+                val = meta['new_value']
+                if val is not None and isinstance(val, dict):
+                    val = utils.getBaseEntity(val)
+                if isinstance(val, dict):
+                    body = {"doc": val}
+                else:
+                    body = {'doc': {attrName: val}}
+        else:
+            if meta['entity_type'] not in self.entityConfigManager.configs:
+                LOG.debug("Ignoring entry for non-cached entity type: {0}".format(meta['entity_type']))
+                return
+
+            val = meta['new_value']
+            body = {"doc": {attrName: val}}
+
+        requests.extend([header, body])
+
+        if 'updated_at' in entityConfig['fields']:
+            body = {"doc": {'updated_at': entry['created_at']}}
+            requests.extend([header, body])
+
+        if 'updated_at' in entityConfig['fields']:
+            body = {"doc": {'updated_by': utils.getBaseEntity(entry['user'])}}
+            requests.extend([header, body])
+
+        return requests
+
+    def generateRequests_New(self, entry, headerInfo):
+        requests = []
+        meta = entry['meta']
+        entityType, changeType = entry['event_type'].split('_', 3)[1:]
+
+        header = {'index': headerInfo}
+        body = {'type': meta['entity_type'], 'id': meta['entity_id']}
+
+        # Load the default values for each field
+        for field in entityConfig['fields']:
+            fieldSchema = self.entityConfigManager.schema[entityType][field]
+
+            if 'data_type' not in fieldSchema:
+                # No data_type for visible field
+                fieldDefault = None
             else:
-                raise TypeError("Unkown work type: {0}".format(work['type']))
+                fieldType = fieldSchema['data_type']['value']
+                fieldDefault = self.config['shotgunFieldTypeDefaults'].get(fieldType, None)
 
-            LOG.debug("Work: {0}".format(work))
+            body.setdefault(field, fieldDefault)
 
-            # LOG.debug("Posting new event")
-            # self.dbWorkerManager.postWork(work)
+        if 'created_at' in entityConfig['fields']:
+            body['created_at'] = entry['created_at']
+        if 'created_by' in entityConfig['fields']:
+            body['created_by'] = utils.getBaseEntity(entry['user'])
 
-    def updatelatestEventLogEntry(self, entity):
-        self.history['latestEventLogEntry'] = entity
-        self.writeHistoryToDisk()
+        if 'updated_at' in entityConfig['fields']:
+            body['updated_at'] = entry['created_at']
+        if 'updated_by' in entityConfig['fields']:
+            body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-    def writeHistoryToDisk(self):
-        with open(self.historyPath, 'w') as f:
-            yaml.dump(self.history, f, default_flow_style=False, indent=4)
+        requests.extend([header, body])
+
+    def generateRequests_Retirement(self, entry, headerInfo):
+        requests = []
+        header = {'delete': headerInfo}
+        requests.extend([header])
+        return requests
+
+    def generateRequests_Revival(self, entry, headerInfo):
+        requests = []
+        entityType, changeType = entry['event_type'].split('_', 3)[1:]
+        # This is one of the few times
+        # we have to go and retrieve the information from shotgun
+        header = {'index': headerInfo}
+        filters = [['id', 'is', entry['entity']['id']]]
+        filters.extend(entityConfig.get('filters', []))
+        # TODO
+        # I could batch these for multiple revives per batch...
+        body = self.sg.find_one(entityType, filters, entityConfig['fields'].keys())
+        requests.extend([header, body])
+        return requests
+
+    def buildElasticFieldMappings(self, entityConfig):
+        typeMappings = {}
+        typeMappings.setdefault('dynamic_templates', entityConfig.get('dynamic_templates', []))
+
+        for field, settings in entityConfig.get('fields', {}).items():
+            if 'mapping' in settings:
+                prop = typeMappings.setdefault('properties', {})
+                prop[field] = settings['mapping']
+
+        result = {
+            entityConfig.type.lower(): typeMappings,
+        }
+
+        return result
