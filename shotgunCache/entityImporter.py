@@ -7,8 +7,6 @@ import datetime
 import time
 import multiprocessing
 
-import utils
-
 __all__ = [
     'ImportManager',
     'ImportWorker',
@@ -313,7 +311,6 @@ class ImportWorker(object):
                 page=page
             )
             result = self.sg.find(**kwargs)
-            print utils.prettyJson(result)
         except Exception:
             LOG.exception("Type: {entity_type}, filters: {filters}, fields: {fields} filterOperator: {filter_operator}".format(**kwargs))
             raise

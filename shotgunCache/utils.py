@@ -37,13 +37,10 @@ LOG = logging.getLogger(__name__)
 
 
 class ShotgunAPIWrapper(sg.Shotgun):
-    _make_call_results = None
-
-    def _make_call(self, *args, **kwargs):
-        # TODO Needed?
-        self._make_call_results = super(ShotgunAPIWrapper, self)._make_call(*args, **kwargs)
-        return self._make_call_results
-
+    """
+    Wrapper for shotgun that disables the date time instance creation
+    Returning the raw data from json
+    """
     def _transform_inbound(self, data):
         # Skip transforming inbound data so it correctly matches for our proxy
         return data
@@ -77,6 +74,7 @@ def sortMultiEntityFieldsByID(schema, entity):
             val = sorted(val, key=lambda e: e['id'])
         result[field] = val
     return result
+
 
 def addNumberSign(num):
     if num > 0:
@@ -141,7 +139,8 @@ def get_dict_diff(a, b):
 
 
 def chunks(l, n):
-    """ Yield successive n-sized chunks from l.
+    """
+    Yield successive n-sized chunks from l.
     """
     for i in xrange(0, len(l), n):
         yield l[i:i+n]
@@ -439,6 +438,7 @@ class Config(DeepDict):
         if self._history is None:
             self._history = History(self['history_file'])
         return self._history
+
     @history.setter
     def history(self, value):
         self._history = value

@@ -7,8 +7,6 @@ import Queue
 
 import elasticsearch
 
-import utils
-
 __all__ = [
     'CountValidator'
 ]

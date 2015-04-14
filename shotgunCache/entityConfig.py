@@ -240,7 +240,6 @@ class EntityConfigManager(object):
                 if field in fields:
                     filters.extend(_filters)
             entityConfig['filters'] = filters
-            print("filters: {0}".format(filters)) # TESTING
 
             fieldsConfig = OrderedDict()
             for field in sorted(fields):

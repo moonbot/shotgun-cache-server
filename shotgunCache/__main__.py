@@ -4,12 +4,8 @@ Standard Python Command Line Interface for Butterfly
 Allows building and exporting weights files
 """
 
-import mbotenv  # Testing
-
 import os
-import ast
 import sys
-import itertools
 import json
 import argparse
 import logging
