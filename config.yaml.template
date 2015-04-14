@@ -10,44 +10,54 @@ shotgun:
 #    - Latest event log entry processed
 #    - Hashes for each of the entity config files
 #    - List of which entities have been imported
-historyFile: "~/.shotgunCacheHistory"
+history_file: "~/.shotgunCacheHistory"
 
 # Template for naming the elasticsearch indexes
-elasticIndexTemplate: shotgun-entity-{type}
+elastic_entity_index_template: shotguncache-entity-{type}
+elastic_stat_index_template: shotguncache-stat-{type}
 
 # Location of where the cache configuration folder is located
-entityConfigFolder: ./entityConfig
+entity_config_folder: ./entityConfig
 
 # Main url for the cache server to listen for input from the monitor
 # or interact with the command line while active
-zmqListenUrl: tcp://0.0.0.0:5557
+zmq_controller_work_url: tcp://0.0.0.0:5557
 
 # Whether to track stats on the performance of the
 # Cache server
-enableStats: true
+enable_stats: true
 
 # Connection information for elasticsearch
 # This is provided directly to the elasticsearch constructor
 # So you can use:
 #    https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch
 # for reference on these options
-elasticsearch_connection:
-    hosts:
-        - localhost
-    sniff_on_start: true
+elasticsearch_connection: {}
+    # hosts:
+    #     - localhost
+    # sniff_on_start: true
 
-# How entities are intially imported or triggered for reimport
-entityImport:
+# List of fields with default values
+# If not specified, then None/null will be used
+shotgun_field_type_defaults:
+    multi_entity: []
+    tag_list: []
 
+# If a cached entity is no longer cached, delete the data from the cache server
+delete_cache_for_untracked_entities: true
+
+# Controls importing of entities from shotgun to the cache
+import:
     # No. of processes to use when retreiving information from shotgun
     # All calls to shotgun will be distributed among each of these
-    processes: 8
+    processes: 4
 
     # Limit for each of the shotgun find requests
-    batchSize: 250
+    batch_size: 250
 
-    zmqPullUrl: tcp://0.0.0.0:5558
-    zmqPostUrl: tcp://0.0.0.0:5559
+    zmq_pull_url: tcp://0.0.0.0:5558
+    zmq_post_url: tcp://0.0.0.0:5559
+
 
 # Settings for the shotgun Monitor
 monitor:
@@ -67,4 +77,56 @@ monitor:
     # Maimum number of events to fetch at once.
     max_event_batch_size: 500
 
-    zmqPostUrl: tcp://0.0.0.0:5557
+    # Time between posting stat about monitor being active
+    heartbeat_interval: 60
+
+validate_counts:
+    # Number of background processes to use when validating data
+    processes: 4
+
+generate_entity_config:
+    # List of fields name patterns to ignore
+    # when creating entity config files
+    field_patterns_to_ignore:
+        - cached_display_name
+        - pinned
+        - visible
+        - billboard
+        - sg_uploaded_movie
+        - sg_uploaded_movie_mp4
+        - sg_uploaded_movie_webm
+
+    # Default filters to add
+    # These are grouped by a field name
+    # If the field name exists in the shotgun schema, the filter will be added
+    # If not, the filter will be ignored
+    default_filters:
+        project:
+            - ['project.Project.archived', 'is', false]
+        archived:
+            - ['archived', 'is', false]
+
+    # Elastic default mapping for indexes
+    elastic_dynamic_templates:
+        all:
+            - skip_string_analyze_template: {
+                    "match_mapping_type": "string",
+                    "mapping": {
+                        "index": "not_analyzed",
+                        "type": "string",
+                        "omit_norms": true
+                    },
+                    "match": "*"
+                }
+
+        # Fix the dynamic mapping for EventLogEntry's meta field
+        # This field changes data types for nested dictionaries
+        # which causes problems in elastic
+        EventLogEntry:
+            - event_metadata_template: {
+                        "mapping": {
+                            "enabled": false,
+                            "type": "object",
+                        },
+                        "match": "meta"
+                    }

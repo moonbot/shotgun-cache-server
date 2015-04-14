@@ -25,9 +25,10 @@ $ ./bin/kibana
 ```
 
 ### Required Python Modules
-- [yaml](http://pyyaml.org/)
-- [ZeroMQ](http://zeromq.org/bindings:python)
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
+- [ZeroMQ](http://zeromq.org/bindings:python)
+- [yaml](http://pyyaml.org/)
+- [elasticsearch](https://elasticsearch-py.readthedocs.org/en/master/)
 
 
 ## Configuration
@@ -122,43 +123,13 @@ Instead restrict your validation to a smaller subset of entities.
 $ shotgunCache validateData --filters [['id','greater_than', 1000], ['id','less_than', 4000]] --order [{'field_name':'created_at','direction':'asc'}] --fields ['id','type'] --limit 1000 --page 2
 ```
 
-#### TODO
+## TODO
 
-- Add automatic EventLogEntry meta field handling
-- Implement DB 
-- How to handle stat elastic index updates?
-	- No backup of data?
-- Should I provide default mappings and settings for the stats?
-- Need to keep a list of api tokens registered in shotgun
-
-
-- Counts aren't matching up between imported items and totals
-- Having trouble creating a task with an new asset in dev project
-- Delete indices for entity types that are no longer cached?
-
-- Create a utility to diff the cache with shotgun
-- Create a utility that can signal a rebuild of specific entity types while the controller is running
 - Project specific schema for entity config manager?
 - Binary support for images, thumbnails, etc...
 
-
-
-
-
-Figure out how to handle event log enties in the future
-No 100% way to do it. Seems really hazy.
-# Search history of event logs with
-# Can't filter based on the metadata for an event log entry
-# The only filters we can use to limit our search of event log entries
-# Is the entity type based on the event type
-# I could filter by the 'entity' field
-# This would limit the results to only entities that were not deleted in shotgun
-# So we would not be storing any retirement events for entities
-# On revive, we would need to fetch the event log entry history
-# I can ignore
-# We should store all pertinent event log entries whether they're processed by the cache or not
-# Ex:
-#   We can ignore processing sg_latest_version changes on Sequences for events on Versions
-#   becase we get an event on both the version and the sequence
-# Monitor will receive all EventLogEntries that occur for the specified entity types
-# However, we will only store events 
+- Figure out a better way to handle storing of event log entries
+	- No easy way to load event log entries for before the cache started due to lack of support
+	for filtering based on the `meta` field.
+	- We could filter by the `entity` field, but this would only allow for handling entities that aren't currently deleted.
+	- It would be great to fit this in the same system as the current entity config for caches, but there would be a lot of work arounds to reproduce the filters and such.
