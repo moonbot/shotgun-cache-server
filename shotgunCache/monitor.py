@@ -12,6 +12,8 @@ __all__ = [
 
 LOG = logging.getLogger(__name__)
 
+processStartTime = time.time()
+
 
 class ShotgunEventMonitor(object):
     """
@@ -21,10 +23,11 @@ class ShotgunEventMonitor(object):
     """
     eventSubTypes = ['New', 'Change', 'Retirement', 'Revival']
 
-    def __init__(self, config, latestEventLogEntry=None):
+    def __init__(self, config):
         super(ShotgunEventMonitor, self).__init__()
         self.config = config
-        self.latestEventLogEntry = latestEventLogEntry
+
+        self.latestEventLogEntry = self.config.history.get('latest_event_log_entry', None)
 
         self.entityTypes = []
 
@@ -39,7 +42,7 @@ class ShotgunEventMonitor(object):
     def start(self):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUSH)
-        self.socket.connect(self.config['zmqListenUrl'])
+        self.socket.connect(self.config['zmq_controller_work_url'])
         self.loadInitialEventID()
         self.buildBaseFilters()
         self.run()
@@ -48,6 +51,7 @@ class ShotgunEventMonitor(object):
         LOG.info("Monitoring Shotgun")
         totalEventsInLoop = 0
         reset = False
+        heartbeatTime = None
         self.socket.send_pyobj({'type': 'monitorStarted'})
         while True:
             if reset:
@@ -58,7 +62,7 @@ class ShotgunEventMonitor(object):
             events = self.getNewEvents()
 
             if len(events):
-                LOG.debug("{0} new EventLogEntrys".format(len(events)))
+                LOG.debug("Received {0} new events".format(len(events)))
 
                 postStartTime = time.time()
                 body = {
@@ -84,14 +88,27 @@ class ShotgunEventMonitor(object):
                         'type': 'stat',
                         'data': {
                             'type': 'shotgun_event_update',
-                            'fetch_interval': self.config['monitor.fetch_interval'],
                             'total_events': totalEventsInLoop,
                             # might not need this, most of the time below 1 ms
-                            'duration': round(timeToPost * 1000, 3),
+                            'duration': round(timeToPost * 1000, 3),  # ms
                             'created_at': datetime.datetime.utcnow().isoformat(),
                         },
                     }
                     self.socket.send_pyobj(statData)
+
+            # Track monitor status so we can graph when it goes down
+            currTime = time.time()
+            if heartbeatTime is None or currTime - heartbeatTime > self.config['monitor']['heartbeat_interval']:
+                statData = {
+                    'type': 'stat',
+                    'data': {
+                        'type': 'monitor_status',
+                        'created_at': datetime.datetime.utcnow().isoformat(),
+                        'uptime': time.time() - processStartTime,  # seconds
+                    },
+                }
+                self.socket.send_pyobj(statData)
+                heartbeatTime = currTime
 
     def getNewEvents(self):
         """
@@ -124,7 +141,11 @@ class ShotgunEventMonitor(object):
                 result = _sg.find("EventLogEntry", filters, fields, order, limit=self.config['monitor.max_event_batch_size'])
                 break
             except (sg.ProtocolError, sg.ResponseError, socket.error):
-                self.connect(force=True)
+                # self.connect(force=True)
+                LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
+                conn_attempts += 1
+            except Exception:
+                # self.connect(force=True)
                 LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
                 conn_attempts += 1
 

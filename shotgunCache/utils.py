@@ -13,12 +13,16 @@ import shotgun_api3 as sg
 __all__ = [
     'ShotgunAPIWrapper',
     'convertStrToDatetime',
+    'addNumberSign',
     'getBaseEntity',
     'prettyJson',
+    'chunks',
     'combine_dict',
     'update_dict',
     'EncodedDict',
     'DeepDict',
+    'sortMultiEntityFieldsByID',
+    'get_dict_diff',
     'get_deep_keys',
     'has_deep_key',
     'get_deep_item',
@@ -33,6 +37,13 @@ LOG = logging.getLogger(__name__)
 
 
 class ShotgunAPIWrapper(sg.Shotgun):
+    _make_call_results = None
+
+    def _make_call(self, *args, **kwargs):
+        # TODO Needed?
+        self._make_call_results = super(ShotgunAPIWrapper, self)._make_call(*args, **kwargs)
+        return self._make_call_results
+
     def _transform_inbound(self, data):
         # Skip transforming inbound data so it correctly matches for our proxy
         return data
@@ -40,6 +51,39 @@ class ShotgunAPIWrapper(sg.Shotgun):
 
 def convertStrToDatetime(dateStr):
     return datetime.datetime(*map(int, re.split('[^\d]', dateStr)[:-1]))
+
+
+def sortMultiEntityFieldsByID(schema, entity):
+    """
+    Sort all multi-entity fields in an entity by their ID.
+
+    Args:
+        schema (dict): Shotgun Schema
+        entity (dict): Entity dictionary
+
+    Returns:
+        dict: entity with fields sorted
+    """
+    result = {}
+    entitySchema = schema[entity['type']]
+    for field, val in entity.items():
+        if field in ['id', 'type']:
+            result[field] = val
+            continue
+
+        fieldSchema = entitySchema[field]
+        dataType = fieldSchema['data_type']['value']
+        if dataType == 'multi_entity':
+            val = sorted(val, key=lambda e: e['id'])
+        result[field] = val
+    return result
+
+def addNumberSign(num):
+    if num > 0:
+        num = '+' + str(num)
+    elif num < 0:
+        num = '-' + str(abs(num))
+    return num
 
 
 def getBaseEntity(entity):
@@ -50,6 +94,57 @@ def getBaseEntity(entity):
     if entity is None:
         return entity
     return dict([(k, v) for k, v in entity.items() if k in ['id', 'type']])
+
+
+def get_dict_diff(a, b):
+    """
+    Get the differences between a, and b
+    Supports nested dictionaries as well.
+
+    >>> a = dict(
+    ...     myBool = True,
+    ...     myDict = {1:'a', 2:'b'},
+    ... )
+    >>> b = dict(
+    ...     myBool = False,
+    ...     myDict = {3:'c'},
+    ...     myString = 'hi'
+    ... )
+    >>> get_dict_diff(b, a)
+    {'myString': 'hi', 'myDict': {3: 'c'}, 'myBool': False}
+    >>> a['myBool'] = False
+    >>> get_dict_diff(b, a)
+    {'myString': 'hi', 'myDict': {3: 'c'}}
+    """
+    diff = {}
+    for k, a_value in a.items():
+        if k in b.keys():
+            b_value = b[k]
+            if a_value == b_value:
+                continue
+            else:
+                # Check for a nested dict
+                # If so, compare values inside it
+                if isinstance(a_value, MutableMapping):
+                    # set any nested differences
+                    nested_diff = get_dict_diff(a_value, b_value)
+                    if not nested_diff:
+                        continue
+                    diff[k] = nested_diff
+
+        # If it hasn't been added to the diff as a nested diff
+        # add it now
+        if k not in diff:
+            diff[k] = a_value
+
+    return diff
+
+
+def chunks(l, n):
+    """ Yield successive n-sized chunks from l.
+    """
+    for i in xrange(0, len(l), n):
+        yield l[i:i+n]
 
 
 def combine_dict(a, b, copy=True):
@@ -317,6 +412,8 @@ class Config(DeepDict):
     """
     Main configuration dictionary for the shotgunCache
     """
+    _history = None
+
     @classmethod
     def loadFromYaml(cls, yamlPath):
         result = yaml.load(open(yamlPath, 'r').read())
@@ -337,6 +434,15 @@ class Config(DeepDict):
         elastic = elasticsearch.Elasticsearch(**kw)
         return elastic
 
+    @property
+    def history(self):
+        if self._history is None:
+            self._history = History(self['history_file'])
+        return self._history
+    @history.setter
+    def history(self, value):
+        self._history = value
+
 
 class History(DeepDict):
     """
@@ -347,15 +453,16 @@ class History(DeepDict):
         path = os.path.expanduser(historyFilePath)
         path = os.path.abspath(path)
         self.historyFilePath = path
-        data = self.load(self.historyFilePath)
-        super(History, self).__init__(data)
+        super(History, self).__init__({})
+        self.load()
 
-    def load(self, path):
-        if os.path.exists(path):
-            result = yaml.load(open(path, 'r').read())
+    def load(self):
+        if os.path.exists(self.historyFilePath):
+            result = yaml.load(open(self.historyFilePath, 'r').read())
         else:
-            LOG.info("No existing history file at {0}".format(path))
+            LOG.info("No existing history file at {0}".format(self.historyFilePath))
             result = {}
+        self._data = result
         return result
 
     def save(self):

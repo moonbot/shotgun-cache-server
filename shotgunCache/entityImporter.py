@@ -7,17 +7,19 @@ import datetime
 import time
 import multiprocessing
 
+import utils
+
 __all__ = [
-    'InitialImportManager',
-    'InitialImportWorker',
+    'ImportManager',
+    'ImportWorker',
 ]
 
 LOG = logging.getLogger(__name__)
 
 
-class InitialImportManager(object):
+class ImportManager(object):
     def __init__(self, controller, config):
-        super(InitialImportManager, self).__init__()
+        super(ImportManager, self).__init__()
         self.controller = controller
         self.config = config
 
@@ -57,9 +59,8 @@ class InitialImportManager(object):
             if not isinstance(work, dict):
                 raise TypeError("Invalid work item, expected dict: {0}".format(work))
 
-            configType = work['work']['configType']
-
             # Update the count of active work items
+            configType = work['work']['configType']
             activeWorkItems = self.activeWorkItemsPerType[configType]
             workID = work['work']['id']
             activeWorkItems.remove(workID)
@@ -89,12 +90,12 @@ class InitialImportManager(object):
     def createPostSocket(self):
         workPostContext = zmq.Context()
         self.workPostSocket = workPostContext.socket(zmq.PUSH)
-        self.workPostSocket.bind(self.config['initialImport.zmqPullUrl'])
+        self.workPostSocket.bind(self.config['import.zmq_pull_url'])
 
     def createPullSocket(self):
         workPullSocket = zmq.Context()
         self.workPullSocket = workPullSocket.socket(zmq.PULL)
-        self.workPullSocket.bind(self.config['initialImport.zmqPostUrl'])
+        self.workPullSocket.bind(self.config['import.zmq_post_url'])
 
     def launchImportProcesses(self, entityConfigs):
         """
@@ -106,9 +107,9 @@ class InitialImportManager(object):
         # but had better luck with Processes directly
         # due to using the importer class and instance methods
         processes = []
-        numProcesses = self.config['initialImport.processes']
+        numProcesses = self.config['import.processes']
         for n in range(numProcesses):
-            importer = InitialImportWorker(
+            importer = ImportWorker(
                 config=self.config,
                 entityConfigs=entityConfigs,
             )
@@ -163,8 +164,8 @@ class InitialImportManager(object):
         entityConfig = self.controller.entityConfigManager.getConfigForType(entityType)
         self.controller.post_entities(entityConfig, entities)
 
-        # Store the timestamp for the initial import
-        # We'll use this to discard old eventlogentities that happened before the import
+        # Store the timestamp for the import
+        # We'll use this to discard old EventLogEntities that happened before the import
         # However, eventlogentry's that are created while importing will still be applied
         timestamps = self.importTimestampsPerType.setdefault(entityType, {})
         timestamps.setdefault('startImportTimestamp', work['data']['startImportTimestamp'])
@@ -172,9 +173,9 @@ class InitialImportManager(object):
         if not len(self.activeWorkItemsPerType[entityType]):
             LOG.info("Imported all entities for type '{0}'".format(entityType))
 
-            self.controller.history.setdefault('configHashes', {})[entityType] = entityConfig.hash
-            self.controller.history.setdefault('cachedEntityTypes', {})[entityType] = self.importTimestampsPerType[entityType]
-            self.controller.history.save()
+            self.config.history.setdefault('config_hashes', {})[entityType] = entityConfig.hash
+            self.config.history.setdefault('cached_entity_types', {})[entityType] = self.importTimestampsPerType[entityType]
+            self.config.history.save()
 
             self.activeWorkItemsPerType.pop(entityType)
 
@@ -184,7 +185,7 @@ class InitialImportManager(object):
         about the counts of the entities
         """
         for config in entityConfigs:
-            work = {'type': 'getPageCount', 'id': self.workID, 'configType': config.type}
+            work = {'type': 'getCount', 'id': self.workID, 'configType': config.type}
             self.activeWorkItemsPerType.setdefault(config.type, []).append(self.workID)
             workSocket.send_pyobj(work)
             self.workID += 1
@@ -205,11 +206,10 @@ class InitialImportManager(object):
             'types_imported_count': len(entityConfigs),
             'entity_types': [c.type for c in entityConfigs],
             'total_entities_imported': self.totalEntitiesImported,
-            'entity_details': dict([(t, c) for t, c in self.countsPerType.items()]),
             'duration': round(totalImportTime, 3),
             'created_at': datetime.datetime.utcnow().isoformat(),
-            'processes': self.config['initialImport.processes'],
-            'batch_size': self.config['initialImport.batchSize'],
+            'processes': self.config['import.processes'],
+            'batch_size': self.config['import.batch_size'],
             'import_failed': self.importFailed,
             # Summarize and page counts shotgun calls
             'total_shotgun_calls': sum([c['pageCount'] for c in self.countsPerType.values()]) + len(entityConfigs),
@@ -217,9 +217,9 @@ class InitialImportManager(object):
         self.controller.post_stat(stat)
 
 
-class InitialImportWorker(object):
+class ImportWorker(object):
     def __init__(self, config, entityConfigs):
-        super(InitialImportWorker, self).__init__()
+        super(ImportWorker, self).__init__()
         self.config = config
         self.entityConfigs = dict([(c.type, c) for c in entityConfigs])
 
@@ -238,18 +238,15 @@ class InitialImportWorker(object):
     def createPostSocket(self):
         self.workPostContext = zmq.Context()
         self.workPostSocket = self.workPostContext.socket(zmq.PUSH)
-        self.workPostSocket.connect(self.config['initialImport.zmqPostUrl'])
+        self.workPostSocket.connect(self.config['import.zmq_post_url'])
 
     def createPullSocket(self):
         self.workPullContext = zmq.Context()
         self.workPullContext = self.workPullContext.socket(zmq.PULL)
-        self.workPullContext.connect(self.config['initialImport.zmqPullUrl'])
+        self.workPullContext.connect(self.config['import.zmq_pull_url'])
 
     def run(self):
         LOG.debug("Running Entity Import Loop")
-        # TODO
-        # Maybe add a signal catch to shutdown nicely
-        # Currently exited using terminate
 
         while True:
             work = self.workPullContext.recv_pyobj()
@@ -274,18 +271,16 @@ class InitialImportWorker(object):
             else:
                 raise ValueError("Unhandled work type: {0}".format(work['type']))
 
-    def handle_getPageCount(self, work):
+    def handle_getCount(self, work):
         LOG.debug("Getting counts for type '{0}' on process {1}".format(work['configType'], os.getpid()))
         entityConfig = self.entityConfigs[work['configType']]
         entityCount = self.getEntityCount(entityConfig)
-        pageCount = int(math.ceil(entityCount / float(self.config['initialImport.batchSize'])))
-        lastPageDiff = (pageCount * self.config['initialImport.batchSize']) - entityCount
+        pageCount = int(math.ceil(entityCount / float(self.config['import.batch_size'])))
         result = {
             'type': 'counts',
             'data': {
                 'entityCount': entityCount,
                 'pageCount': pageCount,
-                'lastPageDiff': lastPageDiff,
             },
             'work': work,
         }
@@ -314,10 +309,11 @@ class InitialImportWorker(object):
                 filters=entityConfig.get('filters', []),
                 filter_operator=entityConfig.get('filterOperator', 'all'),
                 order=[{'column': 'id', 'direction': 'asc'}],
-                limit=self.config['initialImport.batchSize'],
+                limit=self.config['import.batch_size'],
                 page=page
             )
             result = self.sg.find(**kwargs)
+            print utils.prettyJson(result)
         except Exception:
             LOG.exception("Type: {entity_type}, filters: {filters}, fields: {fields} filterOperator: {filter_operator}".format(**kwargs))
             raise

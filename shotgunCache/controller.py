@@ -1,11 +1,12 @@
 import logging
 import datetime
 import multiprocessing
+import fnmatch
 
 import zmq
 
 import entityConfig
-import initialImport
+import entityImporter
 import monitor
 import utils
 
@@ -28,32 +29,21 @@ class DatabaseController(object):
         self.elastic = self.config.createElasticConnection()
         self.sg = self.config.createShotgunConnection()
         self.firstEventPostSinceImport = False
-        self.history = utils.History(self.config['historyFile'])
 
-        self._init_entityConfigManager()
+        self.entityConfigManager = entityConfig.EntityConfigManager(config=self.config)
         self._init_monitor()
-        self._init_initialImportManager()
-
-    def _init_entityConfigManager(self):
-        self.entityConfigManager = entityConfig.EntityConfigManager(
-            config=self.config,
-            previousHashes=self.history.get('configHashes', {}),
-        )
+        self._init_entityImportManager()
 
     def _init_monitor(self):
         self.monitorContext = zmq.Context()
         self.monitorSocket = self.monitorContext.socket(zmq.PULL)
-        self.monitorSocket.bind(self.config['zmqListenUrl'])
 
-        self.monitor = monitor.ShotgunEventMonitor(
-            config=self.config,
-            latestEventLogEntry=self.history.get('latestEventLogEntry', None),
-        )
+        self.monitor = monitor.ShotgunEventMonitor(config=self.config)
         self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
         self.monitorProcess.daemon = True
 
-    def _init_initialImportManager(self):
-        self.initialImportManager = initialImport.InitialImportManager(
+    def _init_entityImportManager(self):
+        self.entityImportManager = entityImporter.ImportManager(
             config=self.config,
             controller=self,
         )
@@ -62,9 +52,10 @@ class DatabaseController(object):
         LOG.info("Starting Up Cache")
         self.entityConfigManager.load()
         if not len(self.entityConfigManager.configs):
-            raise IOError("No entity configs found to cache in {0}".format(self.config['entityConfigFolder']))
+            raise IOError("No entity configs found to cache in {0}".format(self.config['entity_config_folder']))
 
         self.monitor.setEntityTypes(self.entityConfigManager.getEntityTypes())
+        self.monitorSocket.bind(self.config['zmq_controller_work_url'])
         self.monitorProcess.start()
         self.run()
 
@@ -89,49 +80,76 @@ class DatabaseController(object):
     def handle_monitorStarted(self, work):
         # We wait until the monitor signals that it's running
         # this way we don't miss any events that occur while importing
-        self.performInitialImport()
+        self.importEntities()
 
     def handle_stat(self, work):
-        if self.config['enableStats']:
-            LOG.debug("Posting Stat: {0}".format(work['data']['type']))
+        self.post_stat(work['data'])
 
     def handle_eventLogEntries(self, work):
         eventLogEntries = work['data']['entities']
         LOG.info("Posting {0} Events".format(len(eventLogEntries)))
-        self.post_eventLogEntries(eventLogEntries)
+        self.post_eventLogEntryChanges(eventLogEntries)
 
-    def handle_reloadEntities(self, work):
-        entityTypes = work['data'].get('entityTypes', [])
-        if entityTypes:
-            LOG.info("Performing initial import again for {0} entity types".format(len(entityTypes)))
-            # Reload only the supplied entity types
-            configs = [self.entityConfigManager.getConfigForType(t) for t in entityTypes]
-            self.initialImportManager.importEntities(configs)
-        else:
-            LOG.info("Performing initial import again".format(len(entityTypes)))
-            # Reload entities that are out not loaded or config has changed)
-            self.performInitialImport()
+    def handle_reloadChangedConfigs(self, work):
+        LOG.info("Reloading changed configs")
+        self.config.history.load()
+        self.importEntities()
 
     def handle_latestEventLogEntry(self, work):
         LOG.debug("Setting Latest Event Log Entry: {0}".format(work['data']['entity']))
-        self.history['latestEventLogEntry'] = work['data']['entity']
-        self.history.save()
+        self.config.history['latest_event_log_entry'] = work['data']['entity']
+        self.config.history.save()
 
-    def performInitialImport(self):
-        configs = self.entityConfigManager.configs.values()
+    def importEntities(self):
+        configs = self.entityConfigManager.allConfigs()
+
+        def checkConfigNeedsUpdate(cacheConfig):
+            if cacheConfig.hash is None:
+                return True
+            elif cacheConfig.hash != self.config.history.get('config_hashes', {}).get(cacheConfig.type, None):
+                return True
+            return False
 
         configsToLoad = []
-        configsToLoad.extend(filter(lambda c: c.needsUpdate(), configs))
-        configsToLoad.extend(filter(lambda c: c.type not in self.history.get('cachedEntityTypes', {}), configs))
+        configsToLoad.extend(filter(checkConfigNeedsUpdate, configs))
+        configsToLoad.extend(filter(lambda c: c.type not in self.config.history.get('cached_entity_types', {}), configs))
+
+        self.deleteUntrackedFromCache(configs)
 
         if not len(configsToLoad):
             LOG.info("All entity types have been imported.")
             return
 
         LOG.info("Importing {0} entity types into the cache".format(len(configsToLoad)))
-        self.initialImportManager.importEntities(configsToLoad)
-        LOG.info("Initial entity import complete!")
+        self.entityImportManager.importEntities(configsToLoad)
+        LOG.info("Import complete!")
         self.firstEventPostSinceImport = True
+
+    def deleteUntrackedFromCache(self, configs):
+        """
+        Delete data from cache for entities that are no longer cached
+        """
+        if not self.config['delete_cache_for_untracked_entities']:
+            return
+
+        # Get the list of cached entity types
+        entityIndexTemplate = self.config['elastic_entity_index_template']
+        existingIndices = self.elastic.indices.status()['indices'].keys()
+
+        existingCacheIndices = []
+        pattern = entityIndexTemplate.format(type="*")
+        for index in existingIndices:
+            if fnmatch.fnmatch(index, pattern):
+                existingCacheIndices.append(index)
+
+        usedCachedIndices = [c['index'] for c in configs]
+        unusedCacheIndices = [i for i in existingCacheIndices if i not in usedCachedIndices]
+        LOG.debug("Unusesd cache indices: {0}".format(unusedCacheIndices))
+
+        LOG.info("Deleting {0} cache indexes".format(len(unusedCacheIndices)))
+        for index in unusedCacheIndices:
+            LOG.info("Deleting index: {0}".format(index))
+            self.elastic.indices.delete(index=index)
 
     def post_entities(self, entityConfig, entities):
         requests = []
@@ -148,7 +166,7 @@ class DatabaseController(object):
             header = {
                 'index': {
                     '_index': entityConfig['index'],
-                    '_type': entityConfig.type.lower(),
+                    '_type': entityConfig['doc_type'],
                     '_id': entity['id'],
                 }
             }
@@ -159,6 +177,8 @@ class DatabaseController(object):
             entitySchema = self.entityConfigManager.schema[entityConfig.type]
             for field, val in entity.items():
                 if field not in entitySchema:
+                    continue
+                if field in ['type', 'id']:
                     continue
                 fieldDataType = entitySchema[field].get('data_type', {}).get('value', None)
                 if fieldDataType == 'multi_entity':
@@ -181,36 +201,48 @@ class DatabaseController(object):
                     LOG.exception(response['index']['error'])
             raise IOError("Errors occurred creating entities")
 
-    def post_eventLogEntries(self, eventLogEntries):
-
-        # print '-- eventLogEntries --'
-        # print json.dumps(eventLogEntries, sort_keys=True, indent=4, separators=(',', ': '))
-        # print
+    def post_eventLogEntryChanges(self, eventLogEntries):
+        if LOG.getEffectiveLevel() < 10:
+            LOG.debug("--- Event Log Entries ---\n{0}\n".format(utils.prettyJson(eventLogEntries)))
 
         eventLogEntries = self.filterEventsBeforeImport(eventLogEntries)
 
         requests = []
         for entry in eventLogEntries:
-            entityType, changeType = entry['event_type'].split('_', 3)[1:]
-            entityConfig = self.entityConfigManager.getConfigForType(entityType)
-
             meta = entry['meta']
+            entityType, changeType = entry['event_type'].split('_', 3)[1:]
+
+            entityType = meta['entity_type']
+            entityID = meta['entity_id']
+            # TODO
+            # Cleanup
+            # if 'entity_type' in meta:
+            # else:
+            #     entityID = entry['entity']['id']
+
+            if entityType not in self.entityConfigManager:
+                # This also excludes special entities such as Version_sg_linked_versions_Connection
+                LOG.debug("Ignoring uncached entity type: {0}".format(entityType))
+                continue
+
+            entityConfig = self.entityConfigManager.getConfigForType(entityType)
 
             headerInfo = {
                 '_index': entityConfig['index'],
-                '_type': entityType.lower(),
-                '_id': entry['entity']['id'] if entry['entity'] else meta['entity_id'],
+                '_type': entityConfig['doc_type'],
+                '_id': entityID,
             }
 
             meth_name = 'generateRequests_{0}'.format(changeType)
             if hasattr(self, meth_name):
-                getattr(self, meth_name)(entry, headerInfo)
+                newRequests = getattr(self, meth_name)(entry, entityConfig, headerInfo)
+                if newRequests:
+                    requests.extend(newRequests)
             else:
                 raise ValueError("Unhandled change type: {0}".format(changeType))
 
-        # print '-- requests --'
-        # print json.dumps(requests, sort_keys=True, indent=4, separators=(',', ': '))
-        # print
+        if LOG.getEffectiveLevel() < 10:
+            LOG.debug("--- Requests ---\n{0}\n".format(utils.prettyJson(requests)))
 
         if not len(requests):
             LOG.debug("No requests for elastic")
@@ -219,9 +251,8 @@ class DatabaseController(object):
         responses = self.elastic.bulk(body=requests)
         submitFinishTime = datetime.datetime.utcnow()
 
-        # print '-- responses --'
-        # print json.dumps(responses, sort_keys=True, indent=4, separators=(',', ': '))
-        # print
+        if LOG.getEffectiveLevel() < 10:
+            LOG.debug("--- Responses ---\n{0}\n".format(utils.prettyJson(responses)))
 
         # It's possible to run into a few errors here when shotgun events occurred while importing
         # Someone could modify and then delete an entity before the import is finished
@@ -240,13 +271,15 @@ class DatabaseController(object):
                             ignoreError = True
                         else:
                             LOG.error(errStr)
+                            LOG.debug("Request:\n{0}".format(utils.prettyJson(request)))
+                            LOG.debug("Response:\n{0}".format(utils.prettyJson(response)))
             if not ignoreError:
                 raise IOError("Errors occurred creating entities")
 
         if self.firstEventPostSinceImport:
             self.firstEventPostSinceImport = False
 
-        if self.config['enableStats']:
+        if self.config['enable_stats']:
             # Post the min/max/avg delay in milliseconds
             delays = []
             for entry in eventLogEntries:
@@ -258,7 +291,7 @@ class DatabaseController(object):
 
             avg = reduce(lambda x, y: x + y, delays) / len(delays)
             stat = {
-                'type': 'post_to_elastic',
+                'type': 'post_to_cache',
                 'min_shotgun_to_cache_delay': min(delays),
                 'max_shotgun_to_cache_delay': max(delays),
                 'avg_shotgun_to_cache_delay': avg,
@@ -269,11 +302,11 @@ class DatabaseController(object):
             self.post_stat(stat)
 
     def post_stat(self, statDict):
-        if not self.config['enableStats']:
+        if not self.config['enable_stats']:
             return
 
         LOG.debug("Posting stat: {0}".format(statDict['type']))
-        statIndex = self.config['elasticStatIndexTemplate'].format(type=statDict['type'])
+        statIndex = self.config['elastic_stat_index_template'].format(type=statDict['type'])
         if not self.elastic.indices.exists(index=statIndex):
             self.elastic.indices.create(index=statIndex, body={})
         self.elastic.index(index=statIndex, doc_type=statDict['type'], body=statDict)
@@ -282,13 +315,13 @@ class DatabaseController(object):
         result = []
         for entry in eventLogEntries:
             entityType, changeType = entry['event_type'].split('_', 3)[1:]
-            importTimestamps = self.history['cachedEntityTypes'][entityType]
-            initialImportTimestamp = utils.convertStrToDatetime(importTimestamps['startImportTimestamp'])
+            importTimestamps = self.config.history['cached_entity_types'][entityType]
+            importTimestamp = utils.convertStrToDatetime(importTimestamps['startImportTimestamp'])
 
             # Ignore old event log entries
             entryTimestamp = utils.convertStrToDatetime(entry['created_at'])
-            if entryTimestamp < initialImportTimestamp:
-                LOG.debug("Ignoring EventLogEntry occurring before initial import of '{0}': {1}".format(entityType, entry['id']))
+            if entryTimestamp < importTimestamp:
+                LOG.debug("Ignoring EventLogEntry occurring before import of '{0}': {1}".format(entityType, entry['id']))
                 if LOG.getEffectiveLevel() < 10:
                     LOG.debug("Old Entry: \n" + utils.prettyJson(entry))
                 continue
@@ -296,7 +329,7 @@ class DatabaseController(object):
             result.append(entry)
         return result
 
-    def generateRequests_Change(self, entry, headerInfo):
+    def generateRequests_Change(self, entry, entityConfig, headerInfo):
         requests = []
 
         header = {'update': headerInfo}
@@ -308,10 +341,18 @@ class DatabaseController(object):
             return
 
         if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
-            if 'added' in meta:
+            if 'added' in meta and meta['added']:
                 val = [utils.getBaseEntity(e) for e in meta['added']]
                 body = {
                     "script": "ctx._source.{0} += item".format(entry['attribute_name']),
+                    "params": {
+                        "item": val,
+                    }
+                }
+            elif 'removed' in meta and meta['removed']:
+                val = [utils.getBaseEntity(e) for e in meta['removed']]
+                body = {
+                    "script": "ctx._source.{0} -= item".format(entry['attribute_name']),
                     "params": {
                         "item": val,
                     }
@@ -320,10 +361,8 @@ class DatabaseController(object):
                 val = meta['new_value']
                 if val is not None and isinstance(val, dict):
                     val = utils.getBaseEntity(val)
-                if isinstance(val, dict):
-                    body = {"doc": val}
-                else:
-                    body = {'doc': {attrName: val}}
+                body = {"doc": {attrName: val}}
+
         else:
             if meta['entity_type'] not in self.entityConfigManager.configs:
                 LOG.debug("Ignoring entry for non-cached entity type: {0}".format(meta['entity_type']))
@@ -344,7 +383,7 @@ class DatabaseController(object):
 
         return requests
 
-    def generateRequests_New(self, entry, headerInfo):
+    def generateRequests_New(self, entry, entityConfig, headerInfo):
         requests = []
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
@@ -361,7 +400,7 @@ class DatabaseController(object):
                 fieldDefault = None
             else:
                 fieldType = fieldSchema['data_type']['value']
-                fieldDefault = self.config['shotgunFieldTypeDefaults'].get(fieldType, None)
+                fieldDefault = self.config['shotgun_field_type_defaults'].get(fieldType, None)
 
             body.setdefault(field, fieldDefault)
 
@@ -376,14 +415,15 @@ class DatabaseController(object):
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
         requests.extend([header, body])
+        return requests
 
-    def generateRequests_Retirement(self, entry, headerInfo):
+    def generateRequests_Retirement(self, entry, entityConfig, headerInfo):
         requests = []
         header = {'delete': headerInfo}
         requests.extend([header])
         return requests
 
-    def generateRequests_Revival(self, entry, headerInfo):
+    def generateRequests_Revival(self, entry, entityConfig, headerInfo):
         requests = []
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
         # This is one of the few times
@@ -407,7 +447,7 @@ class DatabaseController(object):
                 prop[field] = settings['mapping']
 
         result = {
-            entityConfig.type.lower(): typeMappings,
+            entityConfig['doc_type']: typeMappings,
         }
 
         return result

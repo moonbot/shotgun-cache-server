@@ -140,3 +140,25 @@ $ shotgunCache validateData --filters [['id','greater_than', 1000], ['id','less_
 - Create a utility that can signal a rebuild of specific entity types while the controller is running
 - Project specific schema for entity config manager?
 - Binary support for images, thumbnails, etc...
+
+
+
+
+
+Figure out how to handle event log enties in the future
+No 100% way to do it. Seems really hazy.
+# Search history of event logs with
+# Can't filter based on the metadata for an event log entry
+# The only filters we can use to limit our search of event log entries
+# Is the entity type based on the event type
+# I could filter by the 'entity' field
+# This would limit the results to only entities that were not deleted in shotgun
+# So we would not be storing any retirement events for entities
+# On revive, we would need to fetch the event log entry history
+# I can ignore
+# We should store all pertinent event log entries whether they're processed by the cache or not
+# Ex:
+#   We can ignore processing sg_latest_version changes on Sequences for events on Versions
+#   becase we get an event on both the version and the sequence
+# Monitor will receive all EventLogEntries that occur for the specified entity types
+# However, we will only store events 

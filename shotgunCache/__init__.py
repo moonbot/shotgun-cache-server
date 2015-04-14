@@ -11,4 +11,5 @@ from monitor import *
 from entityConfig import *
 from entityImporter import *
 from validateCounts import *
+from validateData import *
 from utils import *

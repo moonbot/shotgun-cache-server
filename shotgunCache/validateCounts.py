@@ -1,18 +1,13 @@
+import os
 import time
 import logging
+import datetime
 import multiprocessing
 import Queue
 
-"""
-Types of validation
+import elasticsearch
 
-Counts
-    - Quick validation that just ensures the correct # of each entity type is stored in the cache
-    -
-
-
-
-"""
+import utils
 
 __all__ = [
     'CountValidator'
@@ -22,80 +17,154 @@ LOG = logging.getLogger(__name__)
 
 
 class CountValidator(object):
-    def __init__(self, shotgunConnector, elastic, entityConfigs, processCount=8):
+    def __init__(self, config, entityConfigs):
         super(CountValidator, self).__init__()
-        self.shotgunConnector = shotgunConnector
-        self.elastic = elastic
+        self.config = config
         self.entityConfigs = entityConfigs
-        self.processCount = min(len(entityConfigs), processCount)
 
-        self.sg = None
-        self.queue = multiprocessing.JoinableQueue()
+        self.workQueue = multiprocessing.JoinableQueue()
+        self.resultQueue = multiprocessing.Queue()
         self.processes = []
+        self.results = []
 
-    def start(self):
-        self.sg = self.shotgunConnector.getInstance()
+    def start(self, raiseExc=True):
+        LOG.info("Starting Validate Counts")
         self.launchWorkers()
         self.run()
         self.terminateWorkers()
 
+        if raiseExc:
+            failed = []
+            for result in self.results:
+                if result['failed']:
+                    failed.append(result)
+
+            if len(failed):
+                raise RuntimeError("Validation Failed, {0} cached entity type(s) do not match".format(len(failed)))
+
+        return self.results
+
     def launchWorkers(self):
-        for n in range(self.processCount):
-            worker = ValidateCountWorker(self.queue, self.shotgunConnector, self.elastic, self.entityConfigs)
-            proc = multiprocessing.Process(target=worker.run)
+        processCount = min(len(self.entityConfigs), self.config['validate_counts.processes'])
+        LOG.debug("Launching {0} validate workers".format(processCount))
+        for n in range(processCount):
+            worker = CountValidateWorker(self.workQueue, self.resultQueue, self.config, self.entityConfigs)
+            proc = multiprocessing.Process(target=worker.start)
             proc.start()
             self.processes.append(proc)
 
+    def run(self):
+        LOG.debug("Adding items to validate queue")
+        for config in self.entityConfigs:
+            data = {'configType': config.type}
+            self.workQueue.put(data)
+        self.workQueue.join()
+
+        results = []
+        while True:
+            try:
+                result = self.resultQueue.get(False)
+            except Queue.Empty:
+                break
+            else:
+                if result:
+                    results.append(result)
+        self.results = results
+
     def terminateWorkers(self):
+        LOG.debug("Terminating validate workers")
         for proc in self.processes:
             proc.terminate()
-
-    def run(self):
-        for config in self.entityConfigs:
-            data = {
-                'filters': self.filters,
-                'configType': config.type,
-            }
-            self.queue.put(data)
-        self.queue.join()
+        self.processes = []
 
 
-class ValidateCountWorker(object):
-    def __init__(self, queue, shotgunConnector, elasticConnector, elasticEntityIndexTemplate, entityConfigs):
-        super(ValidateCountWorker, self).__init__()
-        self.queue = queue
-        self.shotgunConnector = shotgunConnector
-        self.elasticConnector = elasticConnector
-        self.elasticEntityIndexTemplate = elasticEntityIndexTemplate
+class CountValidateWorker(object):
+    def __init__(self, workQueue, resultQueue, config, entityConfigs):
+        super(CountValidateWorker, self).__init__()
+        self.workQueue = workQueue
+        self.resultQueue = resultQueue
+        self.config = config
         self.entityConfigs = dict([(c.type, c) for c in entityConfigs])
 
+        self.sg = None
+        self.elastic = None
+
     def start(self):
-        self.sg = self.shotgunConnector.getInstance()
-        self.elastic = self.elasticConnector.getInstance()
+        self.sg = self.config.createShotgunConnection(convert_datetimes_to_utc=False)
+        self.elastic = self.config.createElasticConnection()
         self.run()
 
     def run(self):
+        workerPID = os.getpid()
+        LOG.debug("Validate Worker Running: {0}".format(workerPID))
         while True:
             try:
-                work = self.queue.get()
+                work = self.workQueue.get()
             except Queue.Emtpy:
                 continue
                 time.sleep(0.1)
 
-            LOG.debug("work: {0}".format(work)) # TESTING
             entityConfig = self.entityConfigs[work['configType']]
 
             # Make sure we are filtering based how the cached entity
             # is setup, then add the additional filters
             filters = entityConfig.get('filters', [])
-            filters.extend(work.get('filters', []))
 
-            sgResult = self.sg.summarize(entityConfig.type, summary_fields=[{'id', 'count'}])
-            print("sgResult: {0}".format(sgResult)) # TESTING
+            LOG.debug("Getting Shotgun counts for type: '{0}'".format(work['configType']))
+            sgResult = self.sg.summarize(entityConfig.type, filters, summary_fields=[{'field': 'id', 'type': 'count'}])
 
-            # TODO (bchapman) Need more standardized way to get this
-            elasticIndex = self.elasticEntityIndexTemplate.format(type=configType.type).lower()
-            elasticResult = self.elastic.search(index=elasticIndex, type=entityConfig.type.lower())
-            print("elasticResult: {0}".format(elasticResult)) # TESTING
+            sgCount = sgResult['summaries']['id']
 
-            self.queue.task_done()
+            elasticCount = 0
+            try:
+                LOG.debug("Getting Elastic counts for type: '{0}'".format(work['configType']))
+                elasticSearchTime = datetime.datetime.utcnow()
+                elasticResult = self.elastic.count(
+                    index=entityConfig['index'],
+                    doc_type=entityConfig['doc_type'],
+                )
+            except elasticsearch.TransportError:
+                pass
+            else:
+                elasticCount = elasticResult['count']
+
+            # Find the diff of events that have happened in Shotgun, but not been saved to the cache yet
+            # Searches all event log entries for this entity type that are New, Retired, or Revive occurring in the past fetch_interval
+            # including a small amount of processing padding for the cache
+            self.config.history.load()
+            latestCachedEventID = self.config.history['latest_event_log_entry']['id']
+            minTime = elasticSearchTime - datetime.timedelta(seconds=self.config['monitor.fetch_interval'] + 0.05)
+            maxTime = elasticSearchTime
+            eventTypes = ['Shotgun_{entityType}_{changeType}'.format(entityType=entityConfig.type, changeType=t) for t in ['New', 'Retirement', 'Revival']]
+            eventLogFilters = [
+                ['event_type', 'in', eventTypes],
+                ['created_at', 'between', [minTime, maxTime]],
+                ['id', 'greater_than', latestCachedEventID]
+            ]
+
+            LOG.debug("Getting Pending Event Log Entries for type: '{0}'".format(work['configType']))
+            eventLogEntries = self.sg.find('EventLogEntry', eventLogFilters, ['event_type', 'id'])
+
+            additions = len([e for e in eventLogEntries if 'New' in e['event_type'] or 'Revival' in e['event_type']])
+            removals = len([e for e in eventLogEntries if 'Retirement' in e['event_type']])
+            pendingDiff = additions - removals
+
+            failed = sgCount - pendingDiff != elasticCount
+
+            if failed:
+                LOG.debug("'{0}' counts don't match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, elasticCount))
+            else:
+                LOG.debug("'{0}' counts match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, elasticCount))
+
+            result = {
+                'work': work,
+                'entityType': work['configType'],
+                'failed': failed,
+                'sgCount': sgCount,
+                'pendingEvents': len(eventLogEntries),
+                'pendingDiff': pendingDiff,
+                'elasticCount': elasticCount,
+            }
+            self.resultQueue.put(result)
+
+            self.workQueue.task_done()

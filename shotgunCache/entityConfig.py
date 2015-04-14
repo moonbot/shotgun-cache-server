@@ -18,11 +18,10 @@ class EntityConfig(Mapping):
     """
     Config dictionary for a single entity type
     """
-    def __init__(self, type, configPath, previousHash):
+    def __init__(self, type, configPath):
         self.type = type
         self.configPath = configPath
         self.hash = None
-        self.previousHash = previousHash
 
         self.config = None
         self.loadConfig()
@@ -35,16 +34,6 @@ class EntityConfig(Mapping):
 
     def __len__(self):
         return len(self.config)
-
-    def needsUpdate(self):
-        """
-        Check if the config has changed
-        """
-        if self.hash is None:
-            return True
-        elif self.hash != self.previousHash:
-            return True
-        return False
 
     def loadConfig(self):
         """
@@ -69,31 +58,38 @@ class EntityConfigManager(object):
     Manages the entity config files storing the details of how
     Shotgun Entities are stored in the database
     """
-    def __init__(self, config, previousHashes):
+    def __init__(self, config):
         super(EntityConfigManager, self).__init__()
         self.config = config
-        self.previousHashes = previousHashes
 
         self.sg = self.config.createShotgunConnection()
 
         self.configs = {}
         self.schema = None
 
+    def __contains__(self, key):
+        return key in self.configs
+
     def load(self):
-        self.loadShotgunSchema()
+        LOG.debug("Retrieving schema from shotgun")
+        self.schema = self.sg.schema_read()
+        self.loadConfigFromFiles()
+
+    def loadConfigFromFiles(self):
+        """
+        Read the config files and create EntityConfig instances
+        """
         for path in self.getConfigFilePaths():
             typ = os.path.basename(os.path.splitext(path)[0])
+            if typ == 'EventLogEntry':
+                raise NotImplemented("Can't cache EventLogEntries")
+
             config = EntityConfig(
                 typ,
                 path,
-                self.previousHashes.get(typ, None),
             )
             self.validateConfig(config)
             self.configs[config.type] = config
-
-    def loadShotgunSchema(self):
-        LOG.debug("Loading Shotgun Schema")
-        self.schema = self.sg.schema_read()
 
     def validateConfig(self, config):
         """
@@ -121,7 +117,7 @@ class EntityConfigManager(object):
         Returns:
             list of str: file paths
         """
-        path = os.path.abspath(self.config['entityConfigFolder'])
+        path = os.path.abspath(self.config['entity_config_folder'])
         result = []
         if not os.path.exists(path):
             raise OSError("Entity config folder path doesn't exist: {0}".format(path))
@@ -132,6 +128,15 @@ class EntityConfigManager(object):
             result.append(os.path.join(path, f))
         LOG.debug("Found {0} Entity Config Files".format(len(result)))
         return result
+
+    def allConfigs(self):
+        """
+        Get a list of all EntityConfig instances
+
+        Returns:
+            list of EntityConfig
+        """
+        return self.configs.values()
 
     def getEntityTypes(self):
         """
@@ -145,6 +150,9 @@ class EntityConfigManager(object):
     def getConfigForType(self, type):
         """
         Get the entity config instance for the supplied type
+
+        Args:
+            type (str): Shotgun Entity Type
         """
         return self.configs.__getitem__(type)
 
@@ -197,13 +205,19 @@ class EntityConfigManager(object):
             if sgType not in schema:
                 raise ValueError("Missing shotgun entity type: {0}".format(sgType))
 
-            destFolderPath = os.path.abspath(self.config['entityConfigFolder'])
+            if sgType == 'EventLogEntry':
+                raise NotImplemented("Can't cache EventLogEntry entities")
+
+            destFolderPath = os.path.abspath(self.config['entity_config_folder'])
             destPath = os.path.join(destFolderPath, '{type}.json'.format(type=sgType))
 
             entityConfig = OrderedDict()
 
-            index = indexTemplate.format(type=sgType.lower())  # Elastic requires lowercase
+            docType = sgType.lower()
+            index = indexTemplate.format(type=docType)  # Elastic requires lowercase
+
             entityConfig['index'] = index
+            entityConfig['doc_type'] = sgType.lower()  # Elastic requires lowercase
 
             dynamicTemplates = defauiltDynamicTemplates[:]
             dynamicTemplates.extend(defaultDynamicTemplatesPerType.get(sgType, []))
@@ -220,6 +234,13 @@ class EntityConfigManager(object):
                             return False
                     return True
                 fields = filter(excludeIgnoredFields, fields)
+
+            filters = []
+            for field, _filters in self.config['generate_entity_config.default_filters'].items():
+                if field in fields:
+                    filters.extend(_filters)
+            entityConfig['filters'] = filters
+            print("filters: {0}".format(filters)) # TESTING
 
             fieldsConfig = OrderedDict()
             for field in sorted(fields):
