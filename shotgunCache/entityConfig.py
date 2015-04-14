@@ -120,7 +120,8 @@ class EntityConfigManager(object):
         path = os.path.abspath(self.config['entity_config_folder'])
         result = []
         if not os.path.exists(path):
-            raise OSError("Entity config folder path doesn't exist: {0}".format(path))
+            LOG.debug("Creating entity config folder: {0}".format(path))
+            os.mkdir(path)
 
         for f in os.listdir(path):
             if not f.endswith('.json'):
