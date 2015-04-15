@@ -1,6 +1,4 @@
 
-v0.0.1 - Alpha
-
 # Shotgun Cache
 
 This python module provides the tools required to maintain a local caching layer for Shotgun.
