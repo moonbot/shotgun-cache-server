@@ -54,11 +54,18 @@ This can be as simple as downloading, unzipping, and running
 $ PATH_TO_ELASTIC_SEARCH/bin/elasticsearch
 ```
 
+The only thing you have to change to the default Elasticsearch installation is allow Groovy scripting.  
+To do this just add this line to the `config/elasticsearch.yaml` inside your elasticsearch folder.
+```
+script.groovy.sandbox.enabled: true
+```
+
 In addition, I recommend installing [Kibana](https://www.elastic.co/downloads/kibana) to visualize your cache database and stats.
 Again the process can be as simple as downloading, unzipping, and running
 ```
 $ PATH_TO_KIBANA/bin/kibana
 ```
+
 
 ### Required Python Modules
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
