@@ -1,4 +1,3 @@
 include versioneer.py
-include envloader/_version.py
 include README.md
 recursive-include shotgunCache/resources *
