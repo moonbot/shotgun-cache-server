@@ -1,7 +1,7 @@
 
 # Shotgun Cache
 
-This python module provides the tools required to maintain a local caching layer for Shotgun.
+This python module provides the tools required to maintain a local caching layer for Shotgun.  
 This aims to reduce the delay when accessing the data stored in Shotgun.
 
 On average queries to Shotgun take between 100-500 ms, with the caching layer this can be reduced to 10-20 ms.
