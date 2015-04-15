@@ -8,15 +8,15 @@ import Queue
 import utils
 
 __all__ = [
-    'DataValidator'
+    'FieldValidator'
 ]
 
 LOG = logging.getLogger(__name__)
 
 
-class DataValidator(object):
+class FieldValidator(object):
     def __init__(self, config, entityConfigManager, entityConfigs, filters, filterOperator, fields, allCachedFields=False):
-        super(DataValidator, self).__init__()
+        super(FieldValidator, self).__init__()
         self.config = config
         self.entityConfigManager = entityConfigManager
         self.entityConfigs = entityConfigs
@@ -51,7 +51,7 @@ class DataValidator(object):
         processCount = min(len(self.entityConfigs), self.config['validate_counts.processes'])
         LOG.debug("Launching {0} validate workers".format(processCount))
         for n in range(processCount):
-            worker = DataValidateWorker(
+            worker = FieldValidateWorker(
                 self.workQueue,
                 self.resultQueue,
                 self.config,
@@ -115,7 +115,7 @@ class ValidateWorker(object):
         raise NotImplemented()
 
 
-class DataValidateWorker(ValidateWorker):
+class FieldValidateWorker(ValidateWorker):
     def stripNestedEntities(self, entityConfig, entities):
         # Strip extra data from nested entities so
         # only type and id remains
@@ -136,7 +136,7 @@ class DataValidateWorker(ValidateWorker):
 
     def run(self):
         workerPID = os.getpid()
-        LOG.debug("Data Validate Worker Running: {0}".format(workerPID))
+        LOG.debug("Field Validate Worker Running: {0}".format(workerPID))
         while True:
             try:
                 work = self.workQueue.get()
@@ -170,7 +170,7 @@ class DataValidateWorker(ValidateWorker):
             fields.append('type')
             fields = list(set(fields))
 
-            LOG.debug("Getting data from Shotgun for type: {0}".format(work['configType']))
+            LOG.debug("Getting fields from Shotgun for type: {0}".format(work['configType']))
             shotgunResult = self.sg.find(
                 entityConfig.type,
                 filter_operator='all',
@@ -186,7 +186,7 @@ class DataValidateWorker(ValidateWorker):
             # Group into a dictionary with the id as key
             shotgunMap = dict([(e['id'], e) for e in shotgunResult])
 
-            LOG.debug("Getting data from cache for type: {0}".format(work['configType']))
+            LOG.debug("Getting fields from cache for type: {0}".format(work['configType']))
 
             # Have to batch requests to shotgun in groups of 1024
             cacheMatches = []

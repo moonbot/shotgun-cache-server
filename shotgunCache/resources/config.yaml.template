@@ -5,19 +5,26 @@ shotgun:
     script_name: shotgunEventDaemon
     api_key: 841c9a51bf45e1872c3e5f2435dade67458bc858
 
+# Connection information for elasticsearch
+# This is provided directly to the elasticsearch constructor
+# So you can use:
+#    https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch
+# for reference on these options
+elasticsearch_connection: {}
+
 # Where the history state is tracked
 # This includes:
 #    - Latest event log entry processed
 #    - Hashes for each of the entity config files
 #    - List of which entities have been imported
-history_file: "~/.shotgunCacheHistory"
+history_filename: history
+
+# Location of where the cache configuration folder is located
+entity_config_foldername: entity-configs
 
 # Template for naming the elasticsearch indexes
 elastic_entity_index_template: shotguncache-entity-{type}
 elastic_stat_index_template: shotguncache-stat-{type}
-
-# Location of where the cache configuration folder is located
-entity_config_folder: ./entityConfig
 
 # Main url for the cache server to listen for input from the monitor
 # or interact with the command line while active
@@ -26,16 +33,6 @@ zmq_controller_work_url: tcp://0.0.0.0:5557
 # Whether to track stats on the performance of the
 # Cache server
 enable_stats: true
-
-# Connection information for elasticsearch
-# This is provided directly to the elasticsearch constructor
-# So you can use:
-#    https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch
-# for reference on these options
-elasticsearch_connection: {}
-    # hosts:
-    #     - localhost
-    # sniff_on_start: true
 
 # List of fields with default values
 # If not specified, then None/null will be used
@@ -46,8 +43,9 @@ shotgun_field_type_defaults:
 # If a cached entity is no longer cached, delete the data from the cache server
 delete_cache_for_untracked_entities: true
 
-# Controls importing of entities from shotgun to the cache
+# How entities are intially imported or triggered for reimport
 import:
+
     # No. of processes to use when retreiving information from shotgun
     # All calls to shotgun will be distributed among each of these
     processes: 4
@@ -63,7 +61,7 @@ import:
 monitor:
     # Number of seconds to wait before requesting new events after each batch of events
     # is done processing
-    fetch_interval: 2
+    fetch_interval: 1
 
     # If the connection to shotgun fails, number of seconds to wait until we retry.
     # This allows for occasional network hiccups, server restarts, application maintenance,
@@ -74,17 +72,18 @@ monitor:
     # sends an email in the default configuration)
     max_conn_retries: 5
 
-    # Maimum number of events to fetch at once.
+    # Maximum number of events to fetch at once.
     max_event_batch_size: 500
 
     # Time between posting stat about monitor being active
     heartbeat_interval: 60
 
 validate_counts:
-    # Number of background processes to use when validating data
+    # No. of processes to use when validating information from shotgun
+    # All calls to shotgun will be distributed among each of these
     processes: 4
 
-generate_entity_config:
+create_entity_config:
     # List of fields name patterns to ignore
     # when creating entity config files
     field_patterns_to_ignore:

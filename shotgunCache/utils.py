@@ -436,12 +436,26 @@ class Config(DeepDict):
     @property
     def history(self):
         if self._history is None:
-            self._history = History(self['history_file'])
+            self._history = History(self.historyPath)
         return self._history
 
     @history.setter
     def history(self, value):
         self._history = value
+
+    @property
+    def historyPath(self):
+        import main
+        configPath = os.environ.get(main.CONFIG_PATH_ENV_KEY)
+        historyPath = os.path.join(configPath, self['history_filename'])
+        return historyPath
+
+    @property
+    def entityConfigFolderPath(self):
+        import main
+        configPath = os.environ.get(main.CONFIG_PATH_ENV_KEY)
+        historyPath = os.path.join(configPath, self['entity_config_foldername'])
+        return historyPath
 
 
 class History(DeepDict):

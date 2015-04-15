@@ -117,7 +117,7 @@ class EntityConfigManager(object):
         Returns:
             list of str: file paths
         """
-        path = os.path.abspath(self.config['entity_config_folder'])
+        path = os.path.abspath(self.config.entityConfigFolderPath)
         result = []
         if not os.path.exists(path):
             LOG.debug("Creating entity config folder: {0}".format(path))
@@ -157,9 +157,9 @@ class EntityConfigManager(object):
         """
         return self.configs.__getitem__(type)
 
-    def generateEntityConfigFiles(self, types, indexTemplate=None, defaultDynamicTemplatesPerType=None, ignoreFields=[]):
+    def createEntityConfigFiles(self, types, indexTemplate=None, defaultDynamicTemplatesPerType=None, ignoreFields=[]):
         """
-        Generate the entity config json files for the supplied shotgun entity types
+        Create the entity config json files for the supplied shotgun entity types
 
         Args:
             types (list of str): List of Shotgun Entity Types
@@ -209,7 +209,7 @@ class EntityConfigManager(object):
             if sgType == 'EventLogEntry':
                 raise NotImplemented("Can't cache EventLogEntry entities")
 
-            destFolderPath = os.path.abspath(self.config['entity_config_folder'])
+            destFolderPath = os.path.abspath(self.config.entityConfigFolderPath)
             destPath = os.path.join(destFolderPath, '{type}.json'.format(type=sgType))
 
             entityConfig = OrderedDict()
@@ -237,7 +237,7 @@ class EntityConfigManager(object):
                 fields = filter(excludeIgnoredFields, fields)
 
             filters = []
-            for field, _filters in self.config['generate_entity_config.default_filters'].items():
+            for field, _filters in self.config['create_entity_config.default_filters'].items():
                 if field in fields:
                     filters.extend(_filters)
             entityConfig['filters'] = filters
