@@ -343,8 +343,10 @@ class Parser(object):
 
         print (
             '\nSetup now complete!\n\n'
-            'Before starting the server, you can make additional configuration changes'
-            'See https://github.com/moonbot/shotgun-cache-server/wiki for more details'
+            'Before starting the server, you can make additional configuration changes\n'
+            'See https://github.com/moonbot/shotgun-cache-server/wiki for more details\n\n'
+            'Once you\'ve finished your changes you can start the server by running\n'
+            '> shotgunCache run'
         )
 
 
