@@ -45,7 +45,7 @@ Elasticsearch even supports just using `curl` to access the data.
 The cache server can be run on any machine that has Python 2.7 installed and has network access to your Shotgun server.
 
 In order to run Elasticsearch or Kibana you'll need to install the Java Development Kit.
-More information about the requirements can be found here:
+More information about the requirements can be found here:  
 http://www.elastic.co/guide/en/elasticsearch/hadoop/current/requirements.html
 
 You will need to have [Elasticsearch](https://www.elastic.co/downloads/elasticsearch) installed and running.
