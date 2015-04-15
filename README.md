@@ -66,6 +66,8 @@ Again the process can be as simple as downloading, unzipping, and running
 $ PATH_TO_KIBANA/bin/kibana
 ```
 
+When setting up Kibana, I recommend using an index pattern of `shotguncache-entity-*` and using the `created_at` field for the timestamp
+
 
 ### Required Python Modules
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
