@@ -63,7 +63,7 @@ import:
 monitor:
     # Number of seconds to wait before requesting new events after each batch of events
     # is done processing
-    fetch_interval: 1
+    fetch_interval: 2
 
     # If the connection to shotgun fails, number of seconds to wait until we retry.
     # This allows for occasional network hiccups, server restarts, application maintenance,

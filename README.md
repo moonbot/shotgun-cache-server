@@ -3,9 +3,32 @@ v0.0.1 - Alpha
 
 # Shotgun Cache
 
-This python module provides the tools required to keep an Elasticsearch database up to date with a remote Shotgun database.  
-These tools only focuses on maintaining the database.  
-To interact and retrieve data in your scripts and tools, look at [shotgunCacheProxy](http://google.com).
+This python module provides the tools required to maintain a local caching layer for Shotgun.
+This aims to reduce the delay when accessing the data stored in Shotgun.
+
+On average queries to Shotgun take between 100-500 ms, with the local cache this can be reduced to 4-10 ms.
+
+We've utilized Elasticsearch as the database backend due to its speed, and scalability.  
+It also doesn't require a full defined schema like SQL.  
+With Elasticsearch, we just have to provide hints for how to handle certain data types, and everything else can be handled automatically.
+
+The other great thing about Elasticsearch is its integration with Kibana which can be used to visualize your data very quickly.
+
+## How it works
+
+This caching layer is aimed at provided a partial replica of your Shotgun database.
+This allows you to limit the caching to only the entities and fields you need.
+
+On first load for each entity type, we do a batch import.  
+Then we maintain the database through a process similar to Shotgun's Event Log Daemon.  
+This is accomplished by polling Shotgun for changes at a periodic interval, by default 2 seconds.
+
+## How to use this
+
+This module only provides the tools to maintain the local database.
+It doesn't include tools for your scripts to access the database.  
+For this, I recommend using our `ShotgunCacheProxy` (Coming Soon) which allows you to use Shotgun's existing API.
+
 
 ## System Requirements
 The cache server can be run on any machine that has Python installed and has network access to your Shotgun server.
@@ -17,8 +40,8 @@ $ cd into/elasticsearch/folder
 $ ./bin/elasticsearch
 ```
 
-In addition, I recommend installing [Kibana](https://www.elastic.co/downloads/kibana) to get an awesome tool to visualize your cache database and stats.
-Again the process can be as simple as downloadin, unzipping, and running
+In addition, I recommend installing [Kibana](https://www.elastic.co/downloads/kibana) to visualize your cache database and stats.
+Again the process can be as simple as downloading, unzipping, and running
 ```
 $ cd into/kibana/folder
 $ ./bin/kibana
@@ -34,29 +57,41 @@ $ ./bin/kibana
 ## Configuration
 
 There are two main locations for configuring `shotgunCache`.
-	- `config.yaml` file.
-	- `entityConfig` folder.
+- `config.yaml` file.
+- `entityConfig` folder.
 
 ### config.yaml
 This is the main configuration for the shotgun cache.
-Check the file for details about each of the options.
 
-### entityConfig folder
-This folder contains all the settings for caching each shotgun entity type.
-The best way to create these is to generate them.
+The most important options to set are your shotgun connection options at the top.  
+Fill in your `base_url`, `script_name`, and `api_key`.
 
-To generate the entity cache configs, use the follow command template.
-Entity types should be separate by spaces.
-List as many types as you want.
+Check the file for more details about each option.
+
+### Entity Config Folder
+In order to cache entities from Shotgun, the script needs to know which entities and fields you need.
+These configurations are stored in a json file per entity inside of the `entity_config_folder`.
+
+Instead of creating these manually, there's a utility that generates them for you.  
+Use the follow command as a template.
 ```
 $ python shotgunCache generateEntityConfigs Asset Shot
 ```
 
+Entity types should be separated by spaces. List as many types as you want.
+
+Once you've generated them, you can open them in your text editor and adjust them.
+- Remove any fields from the `fields` key you don't want to cache.  
+- Add shotgun filters to the `filters` key to further limit the cache
+- You can also use custom elasticsearch mappings here if you really need to
+
+
 ## Starting the server
 
-Once you've configured your cache server, you can run it using:
+After you've created your `config.yaml`, generated your entity configs and tweaked them as required, your ready to start the cache.
+
 ```
-$ shotgunCache run
+$ python shotgunCache run
 ```
 
 It will then startup, perform a full download of all your entity data, and then continually monitor shotgun for changes.  
@@ -69,7 +104,7 @@ If needed, you can perform a rebuild of certain entity types while the server is
 To do this just run this command in a separate process:
 
 ```
-$ shotgunCache triggerRebuild -h localhost Asset Shot
+$ python shotgunCache rebuild Asset Shot
 ```
 
 ## Validating the cache
@@ -89,7 +124,7 @@ It simply retrieves the current entity counts that should be cached from shotgun
 Because this is a lightweight and fast check, by default all entity types will be validated in this mode.
 
 ```
-$ shotgunCache validateCounts
+$ python shotgunCache validateCounts
 ```
 
 You can supply specific entity types to check separated by spaces
@@ -112,7 +147,7 @@ $ shotgunCache validateData
 You can supply specific entity types to check separated by spaces
 
 ```
-$ shotgunCache validateData Asset Shot
+$ python shotgunCache validateData Asset Shot
 ```
 
 You can also supply different filters or limits.
@@ -120,7 +155,7 @@ WARNING: It is advised that you avoid doing complete data validation over large 
 Instead restrict your validation to a smaller subset of entities.
 
 ```
-$ shotgunCache validateData --filters [['id','greater_than', 1000], ['id','less_than', 4000]] --order [{'field_name':'created_at','direction':'asc'}] --fields ['id','type'] --limit 1000 --page 2
+$ python shotgunCache validateData --filters [['id','greater_than', 1000], ['id','less_than', 4000]] --order [{'field_name':'created_at','direction':'asc'}] --fields ['id','type'] --limit 1000 --page 2
 ```
 
 ## TODO

@@ -26,6 +26,7 @@ APP = None
 class Parser(object):
     ops = [
         'run',
+        'setup',
         'generateEntityConfigs',
         'rebuild',
         'resetStats',
@@ -46,6 +47,18 @@ class Parser(object):
         # Operations
         grp = mainParser.add_argument_group('Operations')
         grp.add_argument(
+            'setup',
+            default=False,
+            action='store_true',
+            help='Guided setup for configuring your cache server',
+        )
+        grp.add_argument(
+            'generateEntityConfigs',
+            default=False,
+            action='store_true',
+            help='Generate entity config files from Shotgun schema',
+        )
+        grp.add_argument(
             'run',
             help='Run the cache server',
             default=False,
@@ -55,19 +68,13 @@ class Parser(object):
             'validateCounts',
             default=False,
             action='store_true',
-            help='Validate current entity counts between shotgun and the cache. Fast validation.'
+            help='Fast validation. Validate current entity counts between Shotgun and cache.'
         )
         grp.add_argument(
             'validateData',
             default=False,
             action='store_true',
-            help='Validate current entities based on data. Slower and more data intensive check.  By default this validates the entity IDs.'
-        )
-        grp.add_argument(
-            'generateEntityConfigs',
-            default=False,
-            action='store_true',
-            help='Generate entity configuration files from Shotgun schema',
+            help='Slower and more data intensive check.  Validates entities based on data from fields between Shotgun and cache. By default this validates the entity id field.'
         )
         grp.add_argument(
             'rebuild',
