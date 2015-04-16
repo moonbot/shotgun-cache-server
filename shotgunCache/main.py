@@ -1,8 +1,4 @@
-"""
-Standard Python Command Line Interface for Butterfly
-
-Allows building and exporting weights files
-"""
+#!/usr/bin/env python
 
 from __future__ import print_function
 
