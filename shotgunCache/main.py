@@ -366,7 +366,6 @@ class Parser(object):
 
         config = shotgunCache.Config.loadFromYaml(self.configFilePath)
 
-        # Verbosity
         controller = shotgunCache.DatabaseController(config)
         controller.start()
 
