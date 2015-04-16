@@ -392,19 +392,8 @@ class Parser(object):
             print('No entities are configured to be cached')
             return
 
-        validator = shotgunCache.CountValidator(config, entityConfigs, parseResults['missing'])
+        validator = shotgunCache.CountValidator(config, entityConfigs)
         results = validator.start(raiseExc=False)
-
-        for result in results:
-            for msg, key in [('Shotgun', 'missingIDsFromShotgun'), ('Cache', 'missingIDsFromCache')]:
-                entityType = result['entityType']
-                if not result[key]:
-                    continue
-
-                print("MISSING: '{0}' Entity IDs missing from {1}".format(entityType, msg))
-                print('-' * self.bannerWidth)
-                print(', '.join([str(n) for n in result[key]]))
-                print
 
         failed = False
         totalCounts = {'sgCount': 0, 'elasticCount': 0, 'pendingDiff': 0}
