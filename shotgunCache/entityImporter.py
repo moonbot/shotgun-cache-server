@@ -194,6 +194,28 @@ class ImportManager(object):
                 LOG.debug("Deleting existing elastic index: {0}".format(config['index']))
                 self.controller.elastic.indices.delete(index=config['index'])
 
+            self.post_entityConfig(config)
+
+    def post_entityConfig(self, entityConfig):
+        LOG.debug("Posting entity config")
+        # This is a streamlined entity config with only
+        #  - fields cached
+        #  - shotgun filters
+
+        index = self.config['elastic_entityconfig_index']
+
+        if not self.controller.elastic.indices.exists(index=index):
+            LOG.debug("Creating elastic index for type: {0}".format(entityConfig.type))
+            self.controller.elastic.indices.create(index=index, body={})
+
+        config = {}
+        config['type'] = entityConfig.type
+        config['fields'] = entityConfig['fields'].keys()
+        config['filters'] = entityConfig['filters']
+        config['created_at'] = datetime.datetime.utcnow().isoformat()
+
+        self.controller.elastic.index(index=index, doc_type=entityConfig['doc_type'], body=config)
+
     def post_stat(self, totalImportTime, entityConfigs):
         """
         Post related stats about the import process to elastic to provide analytics.
