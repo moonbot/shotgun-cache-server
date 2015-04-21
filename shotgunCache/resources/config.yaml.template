@@ -5,12 +5,14 @@ shotgun:
     script_name: shotgunEventDaemon
     api_key: 841c9a51bf45e1872c3e5f2435dade67458bc858
 
-# Connection information for elasticsearch
-# This is provided directly to the elasticsearch constructor
-# So you can use:
-#    https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch
-# for reference on these options
-elasticsearch_connection: {}
+# Connection information for rethinkdb
+# This is provided directly to the rethinkdb connect command
+#    http://rethinkdb.com/api/python/connect/
+rethink:
+    host: 'localhost':
+    port: 28015
+    timeout: 20
+    db: 'shotguncache'
 
 # Where the history state is tracked
 # This includes:
@@ -22,10 +24,10 @@ history_filename: history
 # Location of where the cache configuration folder is located
 entity_config_foldername: entity-configs
 
-# Template for naming the elasticsearch indexes
-elastic_entity_index_template: shotguncache-entity-{type}
-elastic_entityconfig_index: shotguncache-entityconfig
-elastic_stat_index_template: shotguncache-stat-{type}
+# Template for naming the rethinkdb tables
+rethink_schema_table: schema
+rethink_entity_table_template: {type}
+rethink_stat_table_template: stat-{type}
 
 # Main url for the cache server to listen for input from the monitor
 # or interact with the command line while active
@@ -105,28 +107,3 @@ create_entity_config:
             - ['project.Project.archived', 'is', false]
         archived:
             - ['archived', 'is', false]
-
-    # Elastic default mapping for indexes
-    elastic_dynamic_templates:
-        all:
-            - skip_string_analyze_template: {
-                    "match_mapping_type": "string",
-                    "mapping": {
-                        "index": "not_analyzed",
-                        "type": "string",
-                        "omit_norms": true
-                    },
-                    "match": "*"
-                }
-
-        # Fix the dynamic mapping for EventLogEntry's meta field
-        # This field changes data types for nested dictionaries
-        # which causes problems in elastic
-        EventLogEntry:
-            - event_metadata_template: {
-                        "mapping": {
-                            "enabled": false,
-                            "type": "object",
-                        },
-                        "match": "meta"
-                    }

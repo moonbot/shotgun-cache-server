@@ -7,6 +7,8 @@ import datetime
 import time
 import multiprocessing
 
+import utils
+
 __all__ = [
     'ImportManager',
     'ImportWorker',
@@ -188,37 +190,41 @@ class ImportManager(object):
             workSocket.send_pyobj(work)
             self.workID += 1
 
-            # We clear the old index out, before rebuilding the data
-            # All data should be stored in shotgun, so we will never lose data
-            if self.controller.elastic.indices.exists(index=config['index']):
-                LOG.debug("Deleting existing elastic index: {0}".format(config['index']))
-                self.controller.elastic.indices.delete(index=config['index'])
-
             self.post_entityConfig(config)
 
     def post_entityConfig(self, entityConfig):
         LOG.debug("Posting entity config")
-        # This is a streamlined entity config with only
+
+        # Store the cache schema in the cache with the following info
         #  - fields cached
+        #  - schema per field
         #  - shotgun filters
 
-        index = self.config['elastic_entityconfig_index']
+        schemaTable = self.config['rethink_schema_table']
 
-        if not self.controller.elastic.indices.exists(index=index):
-            LOG.debug("Creating elastic index for type: {0}".format(entityConfig.type))
-            self.controller.elastic.indices.create(index=index, body={})
+        if schemaTable not in self.rethink.table_list().run():
+            LOG.debug("Creating table for schema: {0}".format(entityConfig.type))
+            self.rethink.table_create(schemaTable, primary_key='type')
+
+        entitySchema = self.controller.entityConfigManager.schema[entityConfig.type]
+        cacheSchema = dict([(field, s) for field, s in entitySchema.items() if field in entityConfig['fields']])
+
+        if LOG.getEffectiveLevel() < 10:
+            LOG.debug("Cache Schema:\n{0}".format(utils.prettyJson(cacheSchema)))
 
         config = {}
         config['type'] = entityConfig.type
-        config['fields'] = entityConfig['fields'].keys()
+        config['schema'] = cacheSchema
         config['filters'] = entityConfig['filters']
         config['created_at'] = datetime.datetime.utcnow().isoformat()
 
-        self.controller.elastic.index(index=index, doc_type=entityConfig['doc_type'], body=config)
+        result = self.controller.rethink.table(schemaTable).insert(config, conflict="replace").run()
+        if result['errors']:
+            raise IOError(result['first_error'])
 
     def post_stat(self, totalImportTime, entityConfigs):
         """
-        Post related stats about the import process to elastic to provide analytics.
+        Post related stats about the import process to the db to provide analytics.
         These are posted based on the overall importEntities process, not individual imports.
         """
         stat = {

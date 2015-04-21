@@ -8,7 +8,7 @@ import json
 import argparse
 import logging
 import fnmatch
-import elasticsearch
+import rethinkdb
 
 LOG = logging.getLogger('shotgunCache')
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -302,14 +302,23 @@ class Parser(object):
             return
         configTemplate['shotgun']['api_key'] = api_key
 
-        elastic_host = askUser(
-            "Elasticsearch host (localhost:9200): ",
+        rethink_host = askUser(
+            "RethinkDB host ({0}): ".format(configTemplate['rethink']['host']),
         )
-        if elastic_host:
-            connectionOpts = {
-                'hosts': [elastic_host],
-            }
-            elastic_host = configTemplate['elastic_connection'] = connectionOpts
+        if rethink_host:
+            configTemplate['rethink']['host'] = rethink_host
+
+        rethink_port = askUser(
+            "RethinkDB host ({0}): ".format(configTemplate['rethink']['port']),
+        )
+        if rethink_port:
+            configTemplate['rethink']['host'] = rethink_port
+
+        rethink_db = askUser(
+            "RethinkDB Database name ({0}): ".format(configTemplate['rethink']['db']),
+        )
+        if rethink_db:
+            configTemplate['rethink']['db'] = rethink_db
 
         configFilePath = os.path.join(configPath, 'config.yaml')
         with open(configFilePath, 'w') as f:
@@ -330,8 +339,7 @@ class Parser(object):
             controller = shotgunCache.DatabaseController(config)
             newConfigs = controller.entityConfigManager.createEntityConfigFiles(
                 entityTypes,
-                indexTemplate=controller.config['elastic_entity_index_template'],
-                defaultDynamicTemplatesPerType=controller.config['create_entity_config']['elastic_dynamic_templates'],
+                tableTemplate=controller.config['rethink_entity_table_template'],
                 ignoreFields=controller.config['create_entity_config']['field_patterns_to_ignore'],
             )
             for entityType, configPath in newConfigs:
@@ -345,7 +353,6 @@ class Parser(object):
             '> shotgunCache run'
         )
 
-
     def handle_createEntityConfigs(self, parseResults):
         import shotgunCache
 
@@ -354,8 +361,7 @@ class Parser(object):
         controller = shotgunCache.DatabaseController(config)
         newConfigs = controller.entityConfigManager.createEntityConfigFiles(
             parseResults['entityTypes'],
-            indexTemplate=controller.config['elastic_entity_index_template'],
-            defaultDynamicTemplatesPerType=controller.config['create_entity_config']['elastic_dynamic_templates'],
+            tableTemplate=controller.config['rethink_entity_table_template'],
             ignoreFields=controller.config['create_entity_config']['field_patterns_to_ignore'],
         )
         for entityType, configPath in newConfigs:
@@ -391,8 +397,8 @@ class Parser(object):
         results = validator.start(raiseExc=False)
 
         failed = False
-        totalCounts = {'sgCount': 0, 'elasticCount': 0, 'pendingDiff': 0}
-        lineFmt = "{entityType: <16} {status: <10} {sgCount: <10} {elasticCount: <10} {pendingDiff: <12} {shotgunDiff: <12}"
+        totalCounts = {'sgCount': 0, 'cacheCount': 0, 'pendingDiff': 0}
+        lineFmt = "{entityType: <16} {status: <10} {sgCount: <10} {cacheCount: <10} {pendingDiff: <12} {shotgunDiff: <12}"
 
         # Title Line
         titleLine = lineFmt.format(
@@ -400,7 +406,7 @@ class Parser(object):
             entityType="Entity Type",
             sgCount="Shotgun",
             pendingDiff="Pending",
-            elasticCount="Cache",
+            cacheCount="Cache",
             shotgunDiff="Shotgun Diff"
         )
         print(titleLine)
@@ -409,17 +415,17 @@ class Parser(object):
         # Entity Totals
         for result in sorted(results, key=lambda r: r['entityType']):
             status = 'FAIL' if result['failed'] else 'OK'
-            shotgunDiff = result['sgCount'] - result['elasticCount']
+            shotgunDiff = result['sgCount'] - result['cacheCount']
             print(lineFmt.format(
                 entityType=result['entityType'],
                 status=status,
                 sgCount=result['sgCount'],
-                elasticCount=result['elasticCount'],
+                cacheCount=result['cacheCount'],
                 pendingDiff=shotgunCache.addNumberSign(result['pendingDiff']),
                 shotgunDiff=shotgunCache.addNumberSign(shotgunDiff),
             ))
             totalCounts['sgCount'] += result['sgCount']
-            totalCounts['elasticCount'] += result['elasticCount']
+            totalCounts['cacheCount'] += result['cacheCount']
             totalCounts['pendingDiff'] += result['pendingDiff']
             if result['failed']:
                 failed = True
@@ -427,12 +433,12 @@ class Parser(object):
         # Total
         print('-' * self.bannerWidth)
         status = 'ERRORS' if failed else 'OK'
-        shotgunDiff = totalCounts['sgCount'] - totalCounts['elasticCount']
+        shotgunDiff = totalCounts['sgCount'] - totalCounts['cacheCount']
         print(lineFmt.format(
             entityType="Total",
             status=status,
             sgCount=totalCounts['sgCount'],
-            elasticCount=totalCounts['elasticCount'],
+            cacheCount=totalCounts['cacheCount'],
             shotgunDiff=shotgunCache.addNumberSign(shotgunDiff),
             pendingDiff=shotgunCache.addNumberSign(totalCounts['pendingDiff']),
         ))
@@ -578,35 +584,34 @@ class Parser(object):
 
         config = shotgunCache.Config.loadFromYaml(self.configFilePath)
 
-        statIndexTemplate = config['elastic_stat_index_template']
+        statTableTemplate = config['rethink_stat_table_template']
 
-        elastic = elasticsearch.Elasticsearch(**config['elasticsearch_connection'])
-        existingIndices = elastic.indices.status()['indices'].keys()
+        rethink = rethinkdb.connect(**config['rethink'])
+        existingTables = rethink.table_list()
 
-        indicesToRemove = []
+        pattern = statTableTemplate.format(type='*')
+
+        tablesToDrop = []
         if parseResults['all']:
-            pattern = statIndexTemplate.format(type="*")
-            for index in existingIndices:
-                if fnmatch.fnmatch(index, pattern):
-                    indicesToRemove.append(index)
+            tablesToDrop = [t for t in existingTables if fnmatch.fnmatch(t, pattern)]
         else:
             if not len(parseResults['statTypes']):
                 raise ValueError("No stat types supplied, and '--all' was not supplied")
             for statType in parseResults['statTypes']:
-                index = statIndexTemplate.format(type=statType)
-                if index not in existingIndices:
-                    LOG.warning("No elastic index exists for type '{0}': {1}".format(statType, index))
+                table = statTableTemplate.format(type=statType)
+                if table not in existingTables:
+                    LOG.warning("No table exists for type '{0}': {1}".format(statType, table))
                 else:
-                    indicesToRemove.append(index)
+                    tablesToDrop.append(table)
 
-        if not len(indicesToRemove):
-            LOG.info("No elastic indexes to delete")
+        if not len(tablesToDrop):
+            LOG.info("No stats to delete")
             return
 
-        LOG.info("Deleting {0} elastic indexes".format(len(indicesToRemove)))
-        for index in indicesToRemove:
-            LOG.info("Deleting index: {0}".format(index))
-            elastic.indices.delete(index=index)
+        LOG.info("Deleting {0} stat tables".format(len(tablesToDrop)))
+        for table in tablesToDrop:
+            LOG.info("Deleting table: {0}".format(table))
+            rethink.table_drop(table)
 
 def resolveConfigPath(path):
     path = os.path.expanduser(path)
@@ -621,11 +626,6 @@ def main(args, exit=False):
         format="%(asctime)s %(levelname)-8s %(message)s",
         datefmt="%m/%d/%Y %I:%M:%S %p",  # ISO8601
     )
-
-    # Turn off warnings from elasticsearch loggers
-    # these spit out warnings that are sometimes confusing or unneeded
-    elasticLogger = logging.getLogger("elasticsearch")
-    elasticLogger.setLevel(logging.ERROR)
 
     parser = Parser()
     exitCode = parser.parse(args[1:])

@@ -104,11 +104,11 @@ class ValidateWorker(object):
             setattr(self, k, v)
 
         self.sg = None
-        self.elastic = None
+        self.rethink = None
 
     def start(self):
         self.sg = self.config.createShotgunConnection(convert_datetimes_to_utc=False)
-        self.elastic = self.config.createElasticConnection()
+        self.rethink = self.config.createRethinkConnection()
         self.run()
 
     def run(self):
@@ -190,32 +190,11 @@ class FieldValidateWorker(ValidateWorker):
 
             # Have to batch requests to shotgun in groups of 1024
             cacheMatches = []
-            for ids in utils.chunks(shotgunMap.keys(), 1024):
-                searchBody = {
-                    'query': {
-                        'terms': {
-                            'id': ids
-                        }
-                    }
-                }
-
-                LOG.debug("Getting total match count from cache for type: {0}".format(work['configType']))
-                cacheHitResults = self.elastic.count(
-                    index=entityConfig['index'],
-                    doc_type=entityConfig['doc_type'],
-                    body=searchBody,
-                )
-                cacheHits = cacheHitResults['count']
-
-                cacheResult = self.elastic.search(
-                    index=entityConfig['index'],
-                    doc_type=entityConfig['doc_type'],
-                    _source=fields,
-                    body=searchBody,
-                    size=cacheHits,
-                )
-                _cacheMatches = cacheResult['hits']['hits']
-                cacheMatches.extend(_cacheMatches)
+            # for ids in utils.chunks(shotgunMap.keys(), 1024):
+            LOG.debug("Getting total match count from cache for type: {0}".format(work['configType']))
+            cacheMatches = list(self.rethink.table(entityConfig.type)
+                                .filter(lambda e: e['id'] in shotgunMap.keys())
+                                .run())
 
             # Check for missing ids
             missingFromCache = []

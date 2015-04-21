@@ -26,7 +26,7 @@ class DatabaseController(object):
         super(DatabaseController, self).__init__()
         self.config = config
 
-        self.elastic = self.config.createElasticConnection()
+        self.rethink = self.config.createRethinkConnection()
         self.sg = self.config.createShotgunConnection()
         self.firstEventPostSinceImport = False
 
@@ -133,44 +133,34 @@ class DatabaseController(object):
             return
 
         # Get the list of cached entity types
-        entityIndexTemplate = self.config['elastic_entity_index_template']
-        existingIndices = self.elastic.indices.status()['indices'].keys()
+        tableTemplate = self.config['rethink_entity_table_template']
+        existingTables = self.rethink.table_list()
 
-        existingCacheIndices = []
-        pattern = entityIndexTemplate.format(type="*")
-        for index in existingIndices:
-            if fnmatch.fnmatch(index, pattern):
-                existingCacheIndices.append(index)
+        existingCacheTables = []
+        tablePattern = tableTemplate.format(type="*")
+        for table in existingTables:
+            if fnmatch.fnmatch(table, tablePattern):
+                existingCacheTables.append(table)
 
-        usedCachedIndices = [c['index'] for c in configs]
-        unusedCacheIndices = [i for i in existingCacheIndices if i not in usedCachedIndices]
-        LOG.debug("Unusesd cache indices: {0}".format(unusedCacheIndices))
+        usedCacheTables = [c['table'] for c in configs]
+        unusedCacheTables = [t for t in existingCacheTables if t not in usedCacheTables]
+        LOG.debug("Unusesd cache tables: {0}".format(unusedCacheTables))
 
-        LOG.info("Deleting {0} cache indexes".format(len(unusedCacheIndices)))
-        for index in unusedCacheIndices:
-            LOG.info("Deleting index: {0}".format(index))
-            self.elastic.indices.delete(index=index)
+        LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
+        for table in unusedCacheTables:
+            LOG.info("Deleting table: {0}".format(table))
+            self.rethink.table_drop(table)
 
     def post_entities(self, entityConfig, entities):
-        requests = []
-
         LOG.debug("Posting entities")
-        if not self.elastic.indices.exists(index=entityConfig['index']):
-            mappings = self.buildElasticFieldMappings(entityConfig)
 
-            body = {'mappings': mappings}
-            LOG.debug("Creating elastic index for type: {0}".format(entityConfig.type))
-            self.elastic.indices.create(index=entityConfig['index'], body=body)
+        tableName = entityConfig['table']
+
+        if tableName not in self.rethink.table_list().run():
+            LOG.debug("Creating table for type: {0}".format(entityConfig.type))
+            self.rethink.table_create(tableName)
 
         for entity in entities:
-            header = {
-                'index': {
-                    '_index': entityConfig['index'],
-                    '_type': entityConfig['doc_type'],
-                    '_id': entity['id'],
-                }
-            }
-
             # Get rid of extra data found in sub-entities
             # We don't have a way to reliably keep these up to date except
             # for the type and id
@@ -188,18 +178,14 @@ class DatabaseController(object):
                     val = utils.getBaseEntity(val)
                     entity[field] = val
 
-            body = entity
-            requests.extend([header, body])
+        result = self.rethink.table(tableName).insert(entities).run()
+        if result['errors']:
+            raise IOError(result['first_error'])
 
-        responses = self.elastic.bulk(body=requests)
-
-        if responses['errors']:
-            for response in responses['items']:
-                if 'error' not in response.get('index', {}):
-                    continue
-                if response['index']['error']:
-                    LOG.exception(response['index']['error'])
-            raise IOError("Errors occurred creating entities")
+        if result['errors']:
+            # TODO
+            # Better error descriptions?
+            raise IOError("Errors occurred creating entities: {0}".format(result))
 
     def post_eventLogEntryChanges(self, eventLogEntries):
         if LOG.getEffectiveLevel() < 10:
@@ -207,18 +193,12 @@ class DatabaseController(object):
 
         eventLogEntries = self.filterEventsBeforeImport(eventLogEntries)
 
-        requests = []
         for entry in eventLogEntries:
             meta = entry['meta']
             entityType, changeType = entry['event_type'].split('_', 3)[1:]
 
             entityType = meta['entity_type']
-            entityID = meta['entity_id']
-            # TODO
-            # Cleanup
-            # if 'entity_type' in meta:
-            # else:
-            #     entityID = entry['entity']['id']
+            # entityID = meta['entity_id']
 
             if entityType not in self.entityConfigManager:
                 # This also excludes special entities such as Version_sg_linked_versions_Connection
@@ -227,54 +207,38 @@ class DatabaseController(object):
 
             entityConfig = self.entityConfigManager.getConfigForType(entityType)
 
-            headerInfo = {
-                '_index': entityConfig['index'],
-                '_type': entityConfig['doc_type'],
-                '_id': entityID,
-            }
-
-            meth_name = 'generateRequests_{0}'.format(changeType)
+            meth_name = 'post_eventlog_{0}'.format(changeType)
             if hasattr(self, meth_name):
-                newRequests = getattr(self, meth_name)(entry, entityConfig, headerInfo)
-                if newRequests:
-                    requests.extend(newRequests)
+                getattr(self, meth_name)(entry, entityConfig)
             else:
                 raise ValueError("Unhandled change type: {0}".format(changeType))
 
-        if LOG.getEffectiveLevel() < 10:
-            LOG.debug("--- Requests ---\n{0}\n".format(utils.prettyJson(requests)))
-
-        if not len(requests):
-            LOG.debug("No requests for elastic")
-            return
-
-        responses = self.elastic.bulk(body=requests)
         submitFinishTime = datetime.datetime.utcnow()
 
-        if LOG.getEffectiveLevel() < 10:
-            LOG.debug("--- Responses ---\n{0}\n".format(utils.prettyJson(responses)))
+        # if LOG.getEffectiveLevel() < 10:
+        #     LOG.debug("--- Responses ---\n{0}\n".format(utils.prettyJson(responses)))
 
-        # It's possible to run into a few errors here when shotgun events occurred while importing
-        # Someone could modify and then delete an entity before the import is finished
-        # while importing, we capture this change
-        # then after importing, we apply the modification from the events that occured while importing
-        # however, we can't apply the modification because the entity no longer exists
-        # So on the first event post after importing we ignore DocumentMissingException's
-        if responses['errors']:
-            ignoreError = False
-            for request, response in zip(requests, responses['items']):
-                for responseEntry in response.values():
-                    if responseEntry.get('error', None):
-                        errStr = responseEntry['error']
-                        if errStr.startswith('DocumentMissingException') and self.firstEventPostSinceImport:
-                            LOG.warning("Got DocumentMissingException error, but ignoring because it was during import")
-                            ignoreError = True
-                        else:
-                            LOG.error(errStr)
-                            LOG.debug("Request:\n{0}".format(utils.prettyJson(request)))
-                            LOG.debug("Response:\n{0}".format(utils.prettyJson(response)))
-            if not ignoreError:
-                raise IOError("Errors occurred creating entities")
+        # # It's possible to run into a few errors here when shotgun events occurred while importing
+        # # Someone could modify and then delete an entity before the import is finished
+        # # while importing, we capture this change
+        # # then after importing, we apply the modification from the events that occured while importing
+        # # however, we can't apply the modification because the entity no longer exists
+        # # So on the first event post after importing we ignore DocumentMissingException's
+        # if responses['errors']:
+        #     ignoreError = False
+        #     for request, response in zip(requests, responses['items']):
+        #         for responseEntry in response.values():
+        #             if responseEntry.get('error', None):
+        #                 errStr = responseEntry['error']
+        #                 if errStr.startswith('DocumentMissingException') and self.firstEventPostSinceImport:
+        #                     LOG.warning("Got DocumentMissingException error, but ignoring because it was during import")
+        #                     ignoreError = True
+        #                 else:
+        #                     LOG.error(errStr)
+        #                     LOG.debug("Request:\n{0}".format(utils.prettyJson(request)))
+        #                     LOG.debug("Response:\n{0}".format(utils.prettyJson(response)))
+        #     if not ignoreError:
+        #         raise IOError("Errors occurred creating entities")
 
         if self.firstEventPostSinceImport:
             self.firstEventPostSinceImport = False
@@ -295,8 +259,6 @@ class DatabaseController(object):
                 'min_shotgun_to_cache_delay': min(delays),
                 'max_shotgun_to_cache_delay': max(delays),
                 'avg_shotgun_to_cache_delay': avg,
-                'elastic_requests': len(requests),
-                'elastic_bulk_took': responses['took'],
                 'created_at': submitFinishTime.isoformat(),
             }
             self.post_stat(stat)
@@ -306,10 +268,11 @@ class DatabaseController(object):
             return
 
         LOG.debug("Posting stat: {0}".format(statDict['type']))
-        statIndex = self.config['elastic_stat_index_template'].format(type=statDict['type'])
-        if not self.elastic.indices.exists(index=statIndex):
-            self.elastic.indices.create(index=statIndex, body={})
-        self.elastic.index(index=statIndex, doc_type=statDict['type'], body=statDict)
+        statTable = self.config['rethink_stat_table_template'].format(type=statDict['type'])
+        if statTable not in self.rethink.table_list().run():
+            self.rethink.table_create(statTable)
+
+        self.rethink.table(statTable).insert(statDict)
 
     def filterEventsBeforeImport(self, eventLogEntries):
         result = []
@@ -329,10 +292,7 @@ class DatabaseController(object):
             result.append(entry)
         return result
 
-    def generateRequests_Change(self, entry, entityConfig, headerInfo):
-        requests = []
-
-        header = {'update': headerInfo}
+    def post_eventlog_Change(self, entry, entityConfig, headerInfo):
         meta = entry['meta']
 
         attrName = entry['attribute_name']
@@ -340,28 +300,27 @@ class DatabaseController(object):
             LOG.debug("Untracked field updated: {0}".format(attrName))
             return
 
+        table = self.rethink.table(meta['entity_type'])
+        entity = table.get(meta['entity_id'])
+
         if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
             if 'added' in meta and meta['added']:
                 val = [utils.getBaseEntity(e) for e in meta['added']]
-                body = {
-                    "script": "ctx._source.{0} += item".format(entry['attribute_name']),
-                    "params": {
-                        "item": val,
-                    }
-                }
+                result = entity.update(lambda e: {attrName: e[attrName].splice_at(-1, val)}).run()
+                if result['errors']:
+                    raise IOError(result['first_error'])
             elif 'removed' in meta and meta['removed']:
                 val = [utils.getBaseEntity(e) for e in meta['removed']]
-                body = {
-                    "script": "ctx._source.{0} -= item".format(entry['attribute_name']),
-                    "params": {
-                        "item": val,
-                    }
-                }
+                result = entity.update(lambda e: {attrName: e[attrName].difference(val)}).run()
+                if result['errors']:
+                    raise IOError(result['first_error'])
             elif 'new_value' in meta:
                 val = meta['new_value']
                 if val is not None and isinstance(val, dict):
                     val = utils.getBaseEntity(val)
-                body = {"doc": {attrName: val}}
+                result = entity.update({attrName: val}).run()
+                if result['errors']:
+                    raise IOError(result['first_error'])
 
         else:
             if meta['entity_type'] not in self.entityConfigManager.configs:
@@ -369,26 +328,24 @@ class DatabaseController(object):
                 return
 
             val = meta['new_value']
-            body = {"doc": {attrName: val}}
-
-        requests.extend([header, body])
-
-        if 'updated_at' in entityConfig['fields']:
-            body = {"doc": {'updated_at': entry['created_at']}}
-            requests.extend([header, body])
+            result = entity.update({attrName: val}).run()
+            if result['errors']:
+                raise IOError(result['first_error'])
 
         if 'updated_at' in entityConfig['fields']:
-            body = {"doc": {'updated_by': utils.getBaseEntity(entry['user'])}}
-            requests.extend([header, body])
+            result = entity.update({'updated_at': entry['created_at']}).run()
+            if result['errors']:
+                raise IOError(result['first_error'])
 
-        return requests
+        if 'updated_by' in entityConfig['fields']:
+            result = entity.update({'updated_by': utils.getBaseEntity(entry['user'])}).run()
+            if result['errors']:
+                raise IOError(result['first_error'])
 
-    def generateRequests_New(self, entry, entityConfig, headerInfo):
-        requests = []
+    def post_eventlog_New(self, entry, entityConfig, headerInfo):
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
 
-        header = {'index': headerInfo}
         body = {'type': meta['entity_type'], 'id': meta['entity_id']}
 
         # Load the default values for each field
@@ -414,40 +371,37 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        requests.extend([header, body])
-        return requests
+        result = self.rethink.table(entityType).insert(body).run()
+        if result['errors']:
+            raise IOError(result['first_error'])
 
-    def generateRequests_Retirement(self, entry, entityConfig, headerInfo):
-        requests = []
-        header = {'delete': headerInfo}
-        requests.extend([header])
-        return requests
+    def post_eventlog_Retirement(self, entry, entityConfig, headerInfo):
+        meta = entry['meta']
+        result = self.rethink.table(meta['entity_type']).get(meta['entity_id']).delete().run()
+        if result['errors']:
+            raise IOError(result['first_error'])
 
-    def generateRequests_Revival(self, entry, entityConfig, headerInfo):
-        requests = []
+    def post_eventlog_Revival(self, entry, entityConfig, headerInfo):
+        meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
-        # This is one of the few times
-        # we have to go and retrieve the information from shotgun
-        header = {'index': headerInfo}
+
+        # This is one of the few times we have to go and retrieve the information from shotgun
         filters = [['id', 'is', entry['entity']['id']]]
         filters.extend(entityConfig.get('filters', []))
-        # TODO
-        # I could batch these for multiple revives per batch...
         body = self.sg.find_one(entityType, filters, entityConfig['fields'].keys())
-        requests.extend([header, body])
-        return requests
 
-    def buildElasticFieldMappings(self, entityConfig):
-        typeMappings = {}
-        typeMappings.setdefault('dynamic_templates', entityConfig.get('dynamic_templates', []))
+        # Trim to base entities for nested entities
+        for field in body:
+            fieldSchema = self.entityConfigManager.schema[entityType][field]
 
-        for field, settings in entityConfig.get('fields', {}).items():
-            if 'mapping' in settings:
-                prop = typeMappings.setdefault('properties', {})
-                prop[field] = settings['mapping']
+            if fieldSchema['data_type']['value'] in ['multi_entity', 'entity']:
+                body[field] = utils.getBaseEntity(body[field])
 
-        result = {
-            entityConfig['doc_type']: typeMappings,
-        }
+        if 'updated_at' in entityConfig['fields']:
+            body['updated_at'] = entry['created_at']
+        if 'updated_by' in entityConfig['fields']:
+            body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        return result
+        result = self.rethink.table(meta['entity_type']).insert(body).run()
+        if result['errors']:
+            raise IOError(result['first_error'])

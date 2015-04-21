@@ -157,34 +157,17 @@ class EntityConfigManager(object):
         """
         return self.configs.__getitem__(type)
 
-    def createEntityConfigFiles(self, types, indexTemplate=None, defaultDynamicTemplatesPerType=None, ignoreFields=[]):
+    def createEntityConfigFiles(self, types, tableTemplate=None, ignoreFields=[]):
         """
         Create the entity config json files for the supplied shotgun entity types
 
         Args:
             types (list of str): List of Shotgun Entity Types
-            indexTemplate (str): Template for the elastic index name
+            tableTemplate (str): Template for the rethinkdb table name
                 supplied format keywords:
                     type - Shotgun type
                 Ex:
-                    shotguncache-entity-{type}
-            defaultDynamicTemplatesPerType (dict): Dictionary of elastic dynamic templates.
-                templates stored inside the 'all' key will be applied to all entity types.
-                Ex:
-                {
-                    'all': [{
-                                'template_1': {
-                                    "match_mapping_type": "string",
-                                    "mapping": {
-                                        "index": "not_analyzed",
-                                        "type": "string",
-                                        "omit_norms": true
-                                    },
-                                    "match": "*"
-                                }
-                            }]
-
-                }
+                    entity-{type}
             ignoreFields (list of str): global list of field names to exclude.
                 These can use wildcards using fnmatch
                 Ex:
@@ -197,8 +180,6 @@ class EntityConfigManager(object):
         """
         LOG.debug("Reading Shotgun schema")
         schema = self.sg.schema_read()
-
-        defauiltDynamicTemplates = defaultDynamicTemplatesPerType.get('all', {})
 
         LOG.debug("Creating config files")
         result = []
@@ -214,15 +195,9 @@ class EntityConfigManager(object):
 
             entityConfig = OrderedDict()
 
-            docType = sgType.lower()
-            index = indexTemplate.format(type=docType)  # Elastic requires lowercase
+            table = tableTemplate.format(type=sgType)
 
-            entityConfig['index'] = index
-            entityConfig['doc_type'] = sgType.lower()  # Elastic requires lowercase
-
-            dynamicTemplates = defauiltDynamicTemplates[:]
-            dynamicTemplates.extend(defaultDynamicTemplatesPerType.get(sgType, []))
-            entityConfig['dynamic_templates'] = dynamicTemplates
+            entityConfig['table'] = table
 
             typeSchema = schema[sgType]
             fields = typeSchema.keys()

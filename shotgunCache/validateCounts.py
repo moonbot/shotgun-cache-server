@@ -5,7 +5,7 @@ import datetime
 import multiprocessing
 import Queue
 
-import elasticsearch
+import rethinkdb
 
 __all__ = [
     'CountValidator'
@@ -85,11 +85,11 @@ class CountValidateWorker(object):
         self.entityConfigs = dict([(c.type, c) for c in entityConfigs])
 
         self.sg = None
-        self.elastic = None
+        self.rethink = None
 
     def start(self):
         self.sg = self.config.createShotgunConnection(convert_datetimes_to_utc=False)
-        self.elastic = self.config.createElasticConnection()
+        self.rethink = self.config.createRethinkConnection()
         self.run()
 
     def run(self):
@@ -113,26 +113,21 @@ class CountValidateWorker(object):
 
             sgCount = sgResult['summaries']['id']
 
-            elasticCount = 0
+            cacheCount = 0
             try:
-                LOG.debug("Getting Elastic counts for type: '{0}'".format(work['configType']))
-                elasticSearchTime = datetime.datetime.utcnow()
-                elasticResult = self.elastic.count(
-                    index=entityConfig['index'],
-                    doc_type=entityConfig['doc_type'],
-                )
-            except elasticsearch.TransportError:
-                pass
-            else:
-                elasticCount = elasticResult['count']
+                LOG.debug("Getting cache counts for type: '{0}'".format(work['configType']))
+                cacheSearchTime = datetime.datetime.utcnow()
+                cacheCount = self.rethink.table(entityConfig.type).count().run()
+            except rethinkdb.errors.RqlRuntimeError:
+                cacheCount = 0
 
             # Find the diff of events that have happened in Shotgun, but not been saved to the cache yet
             # Searches all event log entries for this entity type that are New, Retired, or Revive occurring in the past fetch_interval
             # including a small amount of processing padding for the cache
             self.config.history.load()
             latestCachedEventID = self.config.history['latest_event_log_entry']['id']
-            minTime = elasticSearchTime - datetime.timedelta(seconds=self.config['monitor.fetch_interval'] + 0.05)
-            maxTime = elasticSearchTime
+            minTime = cacheSearchTime - datetime.timedelta(seconds=self.config['monitor.fetch_interval'] + 0.05)
+            maxTime = cacheSearchTime
             eventTypes = ['Shotgun_{entityType}_{changeType}'.format(entityType=entityConfig.type, changeType=t) for t in ['New', 'Retirement', 'Revival']]
             eventLogFilters = [
                 ['event_type', 'in', eventTypes],
@@ -147,12 +142,12 @@ class CountValidateWorker(object):
             removals = len([e for e in eventLogEntries if 'Retirement' in e['event_type']])
             pendingDiff = additions - removals
 
-            failed = sgCount - pendingDiff != elasticCount
+            failed = sgCount - pendingDiff != cacheCount
 
             if failed:
-                LOG.debug("'{0}' counts don't match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, elasticCount))
+                LOG.debug("'{0}' counts don't match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, cacheCount))
             else:
-                LOG.debug("'{0}' counts match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, elasticCount))
+                LOG.debug("'{0}' counts match, SG: {1} Cache: {2}".format(entityConfig.type, sgCount, cacheCount))
 
             result = {
                 'work': work,
@@ -161,7 +156,7 @@ class CountValidateWorker(object):
                 'sgCount': sgCount,
                 'pendingEvents': len(eventLogEntries),
                 'pendingDiff': pendingDiff,
-                'elasticCount': elasticCount,
+                'cacheCount': cacheCount,
             }
             self.resultQueue.put(result)
 

@@ -7,7 +7,7 @@ from collections import Mapping, MutableMapping
 import json
 
 import yaml
-import elasticsearch
+import rethinkdb
 import shotgun_api3 as sg
 
 __all__ = [
@@ -427,11 +427,11 @@ class Config(DeepDict):
         )
         return sgConn
 
-    def createElasticConnection(self, **kwargs):
-        kw = self['elasticsearch_connection'].copy()
+    def createRethinkConnection(self, **kwargs):
+        kw = self['rethink'].copy()
         kw.update(kwargs)
-        elastic = elasticsearch.Elasticsearch(**kw)
-        return elastic
+        db = rethinkdb.connect(**kw).repl()
+        return db
 
     @property
     def history(self):
