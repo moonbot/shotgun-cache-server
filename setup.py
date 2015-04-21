@@ -37,11 +37,11 @@ setup(
                  'shotgunCache'},
     include_package_data=True,
     install_requires=[
-        'elasticsearch>=1.4.0',
+        'rethinkdb>=2.0.0.post1',
         'pyyaml>=3.11',
         'ruamel.yaml>=0.8',
         'pyzmq>=13.1.0',
-        'shotgun_api3',
+        'shotgun_api3>=3.0.19',
     ],
     zip_safe=False,
     keywords='shotgunCache',
