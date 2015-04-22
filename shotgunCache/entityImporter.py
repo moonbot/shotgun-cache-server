@@ -138,13 +138,13 @@ class ImportManager(object):
         self.countsPerType[entityType] = counts
 
         for page in range(counts['pageCount']):
-            work = {
+            getEntitiesWork = {
                 'type': 'getEntities',
                 'id': self.workID,
-                'page': page+1,
+                'page': page + 1,
                 'configType': entityType
             }
-            self.workPostSocket.send_pyobj(work)
+            self.workPostSocket.send_pyobj(getEntitiesWork)
             self.activeWorkItemsPerType[entityType].append(self.workID)
             self.workID += 1
 

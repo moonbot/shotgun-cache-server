@@ -122,6 +122,9 @@ class DatabaseController(object):
         configsToLoad.extend(filter(checkConfigNeedsUpdate, configs))
         configsToLoad.extend(filter(lambda c: c.type not in self.config.history.get('cached_entity_types', {}), configs))
 
+        # Deduplicate
+        configsToLoad = dict([(c.type, c) for c in configsToLoad]).values()
+
         self.deleteUntrackedFromCache(configs)
 
         if not len(configsToLoad):
