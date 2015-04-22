@@ -28,6 +28,7 @@ class ImportManager(object):
         self.workID = 0
         self.activeWorkItemsPerType = {}
         self.countsPerType = {}
+        self.idsPerType = {}
         self.workPullSocket = None
         self.workPostSocket = None
         self.totalEntitiesImported = 0
@@ -44,6 +45,7 @@ class ImportManager(object):
         self.workID = 0
         self.activeWorkItemsPerType = {}
         self.countsPerType = {}
+        self.idsPerType = {}
         self.importFailed = False
         self.totalEntitiesImported = 0
         self.importTimestampsPerType = {}
@@ -155,6 +157,7 @@ class ImportManager(object):
 
         self.countsPerType[entityType].setdefault('importCount', 0)
         self.countsPerType[entityType]['importCount'] += len(entities)
+        self.idsPerType.setdefault(entityType, []).extend([e['id'] for e in entities])
         LOG.info("Imported {currCount}/{totalCount} entities for type '{typ}' on page {page}/{pageCount}".format(
             currCount=self.countsPerType[entityType]['importCount'],
             totalCount=self.countsPerType[entityType]['entityCount'],
@@ -174,6 +177,24 @@ class ImportManager(object):
 
         if not len(self.activeWorkItemsPerType[entityType]):
             LOG.info("Imported all entities for type '{0}'".format(entityType))
+
+            # Get a list of
+            cachedEntityIDs = set(rethinkdb
+                .table(entityConfig.type)
+                .map(lambda asset: asset['id'])
+                .coerce_to('array')
+                .run(self.controller.rethink)
+            )
+            importedEntityIDs = set(self.idsPerType[entityType])
+            diffIDs = cachedEntityIDs.difference(importedEntityIDs)
+
+            if len(diffIDs):
+                # Delete these extra entities
+                # This allows us to update the cache in place without
+                # having the drop the table before the import, allowing for
+                # a more seamless import / update process
+                LOG.info("Deleting extra entities found in cache with IDs: {0}".format(diffIDs))
+                rethinkdb.db('shotguncache').table(entityConfig.type).get_all(rethinkdb.args(diffIDs)).delete().run(self.controller.rethink)
 
             self.config.history.setdefault('config_hashes', {})[entityType] = entityConfig.hash
             self.config.history.setdefault('cached_entity_types', {})[entityType] = self.importTimestampsPerType[entityType]
