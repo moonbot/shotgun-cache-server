@@ -26,9 +26,9 @@ history_filename: history
 entity_config_foldername: entity-configs
 
 # Template for naming the rethinkdb tables
-rethink_schema_table: "schema"
-rethink_entity_table_template: "{type}"
-rethink_stat_table_template: "stat_{type}"
+rethink_schema_table: schema
+rethink_entity_table_template: entity_{type}
+rethink_stat_table_template: stat_{type}
 
 # Main url for the cache server to listen for input from the monitor
 # or interact with the command line while active
