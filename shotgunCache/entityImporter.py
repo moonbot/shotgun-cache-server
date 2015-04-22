@@ -7,6 +7,8 @@ import datetime
 import time
 import multiprocessing
 
+import rethinkdb
+
 import utils
 
 __all__ = [
@@ -202,9 +204,9 @@ class ImportManager(object):
 
         schemaTable = self.config['rethink_schema_table']
 
-        if schemaTable not in self.rethink.table_list().run():
+        if schemaTable not in rethinkdb.table_list().run(self.controller.rethink):
             LOG.debug("Creating table for schema: {0}".format(entityConfig.type))
-            self.rethink.table_create(schemaTable, primary_key='type')
+            rethinkdb.table_create(schemaTable, primary_key='type').run(self.controller.rethink)
 
         entitySchema = self.controller.entityConfigManager.schema[entityConfig.type]
         cacheSchema = dict([(field, s) for field, s in entitySchema.items() if field in entityConfig['fields']])
@@ -218,7 +220,7 @@ class ImportManager(object):
         config['filters'] = entityConfig['filters']
         config['created_at'] = datetime.datetime.utcnow().isoformat()
 
-        result = self.controller.rethink.table(schemaTable).insert(config, conflict="replace").run()
+        result = rethinkdb.table(schemaTable).insert(config, conflict="replace").run(self.controller.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 

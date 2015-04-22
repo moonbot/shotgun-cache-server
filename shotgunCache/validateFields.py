@@ -5,6 +5,8 @@ import multiprocessing
 import difflib
 import Queue
 
+import rethinkdb
+
 import utils
 
 __all__ = [
@@ -190,16 +192,17 @@ class FieldValidateWorker(ValidateWorker):
 
             # Have to batch requests to shotgun in groups of 1024
             cacheMatches = []
-            # for ids in utils.chunks(shotgunMap.keys(), 1024):
             LOG.debug("Getting total match count from cache for type: {0}".format(work['configType']))
-            cacheMatches = list(self.rethink.table(entityConfig.type)
+            cacheMatches = list(rethinkdb.table(entityConfig.type)
                                 .filter(lambda e: e['id'] in shotgunMap.keys())
-                                .run())
+                                .pluck(fields)
+                                .run(self.rethink))
 
             # Check for missing ids
             missingFromCache = []
             missingFromShotgun = []
-            cacheMap = dict([(t['_source']['id'], t['_source']) for t in cacheMatches])
+            # print("cacheMatches: {0}".format(cacheMatches)) # TESTING
+            cacheMap = dict([(e['id'], e) for e in cacheMatches])
             if len(cacheMap) != len(shotgunMap):
                 cacheIDSet = set(cacheMap)
                 shotgunIDSet = set(shotgunMap.keys())

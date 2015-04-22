@@ -4,6 +4,7 @@ import multiprocessing
 import fnmatch
 
 import zmq
+import rethinkdb
 
 import entityConfig
 import entityImporter
@@ -57,6 +58,13 @@ class DatabaseController(object):
         self.monitor.setEntityTypes(self.entityConfigManager.getEntityTypes())
         self.monitorSocket.bind(self.config['zmq_controller_work_url'])
         self.monitorProcess.start()
+
+        # Create the database
+        dbName = self.rethink.db
+        if self.rethink.db not in rethinkdb.db_list().run(self.rethink):
+            LOG.info("Creating rethink database: {0}".format(dbName))
+            rethinkdb.db_create(dbName).run(self.rethink)
+
         self.run()
 
     def run(self):
@@ -134,7 +142,7 @@ class DatabaseController(object):
 
         # Get the list of cached entity types
         tableTemplate = self.config['rethink_entity_table_template']
-        existingTables = self.rethink.table_list()
+        existingTables = rethinkdb.table_list().run(self.rethink)
 
         existingCacheTables = []
         tablePattern = tableTemplate.format(type="*")
@@ -149,16 +157,16 @@ class DatabaseController(object):
         LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
         for table in unusedCacheTables:
             LOG.info("Deleting table: {0}".format(table))
-            self.rethink.table_drop(table)
+            rethinkdb.table_drop(table).run(self.rethink)
 
     def post_entities(self, entityConfig, entities):
         LOG.debug("Posting entities")
 
         tableName = entityConfig['table']
 
-        if tableName not in self.rethink.table_list().run():
+        if tableName not in rethinkdb.table_list().run(self.rethink):
             LOG.debug("Creating table for type: {0}".format(entityConfig.type))
-            self.rethink.table_create(tableName)
+            rethinkdb.table_create(tableName).run(self.rethink)
 
         for entity in entities:
             # Get rid of extra data found in sub-entities
@@ -178,7 +186,10 @@ class DatabaseController(object):
                     val = utils.getBaseEntity(val)
                     entity[field] = val
 
-        result = self.rethink.table(tableName).insert(entities).run()
+        # TODO
+        # Since we aren't deleting the existing table
+        # Need to delete any extra entities at the end
+        result = rethinkdb.table(tableName).insert(entities, conflict="replace").run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
@@ -192,6 +203,9 @@ class DatabaseController(object):
             LOG.debug("--- Event Log Entries ---\n{0}\n".format(utils.prettyJson(eventLogEntries)))
 
         eventLogEntries = self.filterEventsBeforeImport(eventLogEntries)
+
+        if not len(eventLogEntries):
+            return
 
         for entry in eventLogEntries:
             meta = entry['meta']
@@ -269,10 +283,10 @@ class DatabaseController(object):
 
         LOG.debug("Posting stat: {0}".format(statDict['type']))
         statTable = self.config['rethink_stat_table_template'].format(type=statDict['type'])
-        if statTable not in self.rethink.table_list().run():
-            self.rethink.table_create(statTable)
+        if statTable not in rethinkdb.table_list().run(self.rethink):
+            rethinkdb.table_create(statTable).run(self.rethink)
 
-        self.rethink.table(statTable).insert(statDict)
+        rethinkdb.table(statTable).insert(statDict).run(self.rethink)
 
     def filterEventsBeforeImport(self, eventLogEntries):
         result = []
@@ -292,33 +306,35 @@ class DatabaseController(object):
             result.append(entry)
         return result
 
-    def post_eventlog_Change(self, entry, entityConfig, headerInfo):
+    def post_eventlog_Change(self, entry, entityConfig):
         meta = entry['meta']
+
+        LOG.debug("Posting change to entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
         attrName = entry['attribute_name']
         if attrName not in entityConfig['fields']:
             LOG.debug("Untracked field updated: {0}".format(attrName))
             return
 
-        table = self.rethink.table(meta['entity_type'])
+        table = rethinkdb.table(meta['entity_type'])
         entity = table.get(meta['entity_id'])
 
         if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
             if 'added' in meta and meta['added']:
                 val = [utils.getBaseEntity(e) for e in meta['added']]
-                result = entity.update(lambda e: {attrName: e[attrName].splice_at(-1, val)}).run()
+                result = entity.update(lambda e: {attrName: e[attrName].splice_at(-1, val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'removed' in meta and meta['removed']:
                 val = [utils.getBaseEntity(e) for e in meta['removed']]
-                result = entity.update(lambda e: {attrName: e[attrName].difference(val)}).run()
+                result = entity.update(lambda e: {attrName: e[attrName].difference(val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'new_value' in meta:
                 val = meta['new_value']
                 if val is not None and isinstance(val, dict):
                     val = utils.getBaseEntity(val)
-                result = entity.update({attrName: val}).run()
+                result = entity.update({attrName: val}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
 
@@ -328,23 +344,25 @@ class DatabaseController(object):
                 return
 
             val = meta['new_value']
-            result = entity.update({attrName: val}).run()
+            result = entity.update({attrName: val}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
 
         if 'updated_at' in entityConfig['fields']:
-            result = entity.update({'updated_at': entry['created_at']}).run()
+            result = entity.update({'updated_at': entry['created_at']}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
 
         if 'updated_by' in entityConfig['fields']:
-            result = entity.update({'updated_by': utils.getBaseEntity(entry['user'])}).run()
+            result = entity.update({'updated_by': utils.getBaseEntity(entry['user'])}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
 
-    def post_eventlog_New(self, entry, entityConfig, headerInfo):
+    def post_eventlog_New(self, entry, entityConfig):
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
+
+        LOG.debug("Posting new entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
         body = {'type': meta['entity_type'], 'id': meta['entity_id']}
 
@@ -371,19 +389,23 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = self.rethink.table(entityType).insert(body).run()
+        result = rethinkdb.table(entityType).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
-    def post_eventlog_Retirement(self, entry, entityConfig, headerInfo):
+    def post_eventlog_Retirement(self, entry, entityConfig):
         meta = entry['meta']
-        result = self.rethink.table(meta['entity_type']).get(meta['entity_id']).delete().run()
+        LOG.debug("Deleting entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
+
+        result = rethinkdb.table(meta['entity_type']).get(meta['entity_id']).delete().run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
-    def post_eventlog_Revival(self, entry, entityConfig, headerInfo):
+    def post_eventlog_Revival(self, entry, entityConfig):
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
+
+        LOG.debug("Reviving entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
         # This is one of the few times we have to go and retrieve the information from shotgun
         filters = [['id', 'is', entry['entity']['id']]]
@@ -402,6 +424,6 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = self.rethink.table(meta['entity_type']).insert(body).run()
+        result = rethinkdb.table(meta['entity_type']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])

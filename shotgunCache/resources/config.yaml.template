@@ -4,12 +4,13 @@ shotgun:
     base_url: https://yoursite.shotgunstudio.com
     script_name: shotgunEventDaemon
     api_key: 841c9a51bf45e1872c3e5f2435dade67458bc858
+    ensure_ascii: false  # Fixed unicode errors
 
 # Connection information for rethinkdb
 # This is provided directly to the rethinkdb connect command
 #    http://rethinkdb.com/api/python/connect/
 rethink:
-    host: 'localhost':
+    host: 'localhost'
     port: 28015
     timeout: 20
     db: 'shotguncache'
@@ -25,9 +26,9 @@ history_filename: history
 entity_config_foldername: entity-configs
 
 # Template for naming the rethinkdb tables
-rethink_schema_table: schema
-rethink_entity_table_template: {type}
-rethink_stat_table_template: stat-{type}
+rethink_schema_table: "schema"
+rethink_entity_table_template: "{type}"
+rethink_stat_table_template: "stat_{type}"
 
 # Main url for the cache server to listen for input from the monitor
 # or interact with the command line while active

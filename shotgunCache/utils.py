@@ -430,8 +430,8 @@ class Config(DeepDict):
     def createRethinkConnection(self, **kwargs):
         kw = self['rethink'].copy()
         kw.update(kwargs)
-        db = rethinkdb.connect(**kw).repl()
-        return db
+        conn = rethinkdb.connect(**kw)
+        return conn
 
     @property
     def history(self):

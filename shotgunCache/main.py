@@ -17,7 +17,7 @@ CONFIG_PATH_ENV_KEY = 'SHOTGUN_CACHE_CONFIG'
 
 
 class Parser(object):
-    bannerWidth = 80
+    bannerWidth = 84
 
     def __init__(self):
         self.configPath = DEFAULT_CONFIG_PATH
@@ -398,7 +398,7 @@ class Parser(object):
 
         failed = False
         totalCounts = {'sgCount': 0, 'cacheCount': 0, 'pendingDiff': 0}
-        lineFmt = "{entityType: <16} {status: <10} {sgCount: <10} {cacheCount: <10} {pendingDiff: <12} {shotgunDiff: <12}"
+        lineFmt = "{entityType: <26} {status: <10} {sgCount: <10} {cacheCount: <10} {pendingDiff: <12} {shotgunDiff: <12}"
 
         # Title Line
         titleLine = lineFmt.format(
