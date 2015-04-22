@@ -180,7 +180,7 @@ class ImportManager(object):
 
             # Get a list of
             cachedEntityIDs = set(rethinkdb
-                .table(entityConfig.type)
+                .table(entityConfig['table'])
                 .map(lambda asset: asset['id'])
                 .coerce_to('array')
                 .run(self.controller.rethink)
@@ -194,7 +194,7 @@ class ImportManager(object):
                 # having the drop the table before the import, allowing for
                 # a more seamless import / update process
                 LOG.info("Deleting extra entities found in cache with IDs: {0}".format(diffIDs))
-                rethinkdb.db('shotguncache').table(entityConfig.type).get_all(rethinkdb.args(diffIDs)).delete().run(self.controller.rethink)
+                rethinkdb.db('shotguncache').table(entityConfig['table']).get_all(rethinkdb.args(diffIDs)).delete().run(self.controller.rethink)
 
             self.config.history.setdefault('config_hashes', {})[entityType] = entityConfig.hash
             self.config.history.setdefault('cached_entity_types', {})[entityType] = self.importTimestampsPerType[entityType]

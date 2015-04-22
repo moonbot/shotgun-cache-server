@@ -177,7 +177,7 @@ class FieldValidateWorker(ValidateWorker):
             # Have to batch requests to shotgun in groups of 1024
             cacheMatches = []
             LOG.debug("Getting total match count from cache for type: {0}".format(work['configType']))
-            cacheMatches = list(rethinkdb.table(entityConfig.type)
+            cacheMatches = list(rethinkdb.table(entityConfig['table'])
                                 .filter(lambda e: e['id'] in shotgunMap.keys())
                                 .pluck(fields)
                                 .run(self.rethink))

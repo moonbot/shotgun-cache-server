@@ -392,7 +392,7 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = rethinkdb.table(entityType).insert(body).run(self.rethink)
+        result = rethinkdb.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
@@ -400,7 +400,7 @@ class DatabaseController(object):
         meta = entry['meta']
         LOG.debug("Deleting entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
-        result = rethinkdb.table(meta['entity_type']).get(meta['entity_id']).delete().run(self.rethink)
+        result = rethinkdb.table(entityConfig['table']).get(meta['entity_id']).delete().run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
