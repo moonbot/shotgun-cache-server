@@ -419,7 +419,12 @@ class DatabaseController(object):
             fieldSchema = self.entityConfigManager.schema[entityType][field]
 
             if fieldSchema['data_type']['value'] in ['multi_entity', 'entity']:
-                body[field] = utils.getBaseEntity(body[field])
+                val = body[field]
+                if isinstance(val, (list, tuple)):
+                    val = [utils.getBaseEntity(e) for e in val]
+                else:
+                    val = utils.getBaseEntity()
+                body[field] = val
 
         if 'updated_at' in entityConfig['fields']:
             body['updated_at'] = entry['created_at']
