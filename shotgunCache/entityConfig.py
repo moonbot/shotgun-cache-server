@@ -211,12 +211,6 @@ class EntityConfigManager(object):
                     return True
                 fields = filter(excludeIgnoredFields, fields)
 
-            filters = []
-            for field, _filters in self.config['create_entity_config.default_filters'].items():
-                if field in fields:
-                    filters.extend(_filters)
-            entityConfig['filters'] = filters
-
             fieldsConfig = OrderedDict()
             for field in sorted(fields):
                 fieldConfig = {}

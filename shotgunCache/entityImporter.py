@@ -197,11 +197,6 @@ class ImportManager(object):
     def post_entityConfig(self, entityConfig):
         LOG.debug("Posting entity config")
 
-        # Store the cache schema in the cache with the following info
-        #  - fields cached
-        #  - schema per field
-        #  - shotgun filters
-
         schemaTable = self.config['rethink_schema_table']
 
         if schemaTable not in rethinkdb.table_list().run(self.controller.rethink):
@@ -217,7 +212,6 @@ class ImportManager(object):
         config = {}
         config['type'] = entityConfig.type
         config['schema'] = cacheSchema
-        config['filters'] = entityConfig['filters']
         config['created_at'] = datetime.datetime.utcnow().isoformat()
 
         result = rethinkdb.table(schemaTable).insert(config, conflict="replace").run(self.controller.rethink)
@@ -334,8 +328,7 @@ class ImportWorker(object):
             kwargs = dict(
                 entity_type=entityConfig.type,
                 fields=entityConfig.get('fields', {}).keys(),
-                filters=entityConfig.get('filters', []),
-                filter_operator=entityConfig.get('filterOperator', 'all'),
+                filters=[],
                 order=[{'column': 'id', 'direction': 'asc'}],
                 limit=self.config['import.batch_size'],
                 page=page
@@ -350,8 +343,7 @@ class ImportWorker(object):
     def getEntityCount(self, entityConfig):
         result = self.sg.summarize(
             entity_type=entityConfig.type,
-            filters=entityConfig.get('filters', []),
-            filter_operator=entityConfig.get('filterOperator', 'all'),
+            filters=[],
             summary_fields=[{'field': 'id', 'type': 'count'}],
         )
         return result['summaries']['id']

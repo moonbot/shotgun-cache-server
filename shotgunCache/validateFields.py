@@ -148,22 +148,6 @@ class FieldValidateWorker(ValidateWorker):
 
             entityConfig = self.entityConfigs[work['configType']]
 
-            # Make sure we are filtering based how the cached entity
-            # is setup, then add the additional filters
-            entityFilters = entityConfig.get('filters', [])
-
-            # Combine the cache filters with additional filters
-            filters = [
-                {
-                    'filter_operator': 'all',
-                    'filters': entityFilters
-                },
-                {
-                    'filter_operator': self.filterOperator,
-                    'filters': self.filters
-                }
-            ]
-
             if self.allCachedFields:
                 fields = entityConfig['fields'].keys()
             else:
@@ -175,8 +159,8 @@ class FieldValidateWorker(ValidateWorker):
             LOG.debug("Getting fields from Shotgun for type: {0}".format(work['configType']))
             shotgunResult = self.sg.find(
                 entityConfig.type,
-                filter_operator='all',
-                filters=filters,
+                filter_operator=self.filterOperator,
+                filters=self.filters,
                 fields=fields,
                 order=[{'field_name': 'id', 'direction': 'asc'}]
             )

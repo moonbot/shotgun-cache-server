@@ -409,7 +409,6 @@ class DatabaseController(object):
 
         # This is one of the few times we have to go and retrieve the information from shotgun
         filters = [['id', 'is', entry['entity']['id']]]
-        filters.extend(entityConfig.get('filters', []))
         body = self.sg.find_one(entityType, filters, entityConfig['fields'].keys())
 
         # Trim to base entities for nested entities
