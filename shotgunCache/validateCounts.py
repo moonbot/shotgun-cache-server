@@ -113,7 +113,7 @@ class CountValidateWorker(object):
             try:
                 LOG.debug("Getting cache counts for type: '{0}'".format(work['configType']))
                 cacheSearchTime = datetime.datetime.utcnow()
-                cacheCount = rethinkdb.table(entityConfig.type).count().run(self.rethink)
+                cacheCount = rethinkdb.table(entityConfig['table']).count().run(self.rethink)
             except rethinkdb.errors.RqlRuntimeError:
                 cacheCount = 0
 
