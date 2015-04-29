@@ -6,16 +6,13 @@ This aims to reduce the delay when accessing the data stored in Shotgun.
 
 On average queries to Shotgun take between 100-500 ms, with the caching layer this can be reduced to 10-20 ms.
 
-We've utilized Elasticsearch as the database backend due to its speed, and scalability.  
-It also doesn't require a full defined schema like SQL.  
-With Elasticsearch, we just have to provide hints for how to handle certain data types, and everything else can be handled automatically.
-
-The other great thing about Elasticsearch is its integration with Kibana which can be used to visualize your data very quickly.
+We've utilized RethinkDB as the database backend due to its speed, scalability, and query capabilities.  
+It's a schema-less database, but still supports joining and merging via querys.
 
 ## How it works
 
 This caching layer is aimed at provided a partial replica of your Shotgun database.
-This allows you to limit the caching to only the entities and fields you need.
+This allows you to limit the caching to only the entity types and fields you need.
 
 On first load for each entity type, a batch import is performed loading all existing entities.  
 Then, the database is kept in sync through a process similar to Shotgun's Event Log Daemon.  
@@ -38,43 +35,21 @@ This module only provides the tools to maintain the local database.
 It doesn't include tools for your scripts to access the database.  
 For this, I recommend using our `ShotgunCacheProxy` (Coming Soon) which allows you to use Shotgun's existing API to communicate to the caching layer.  
 
-You could also you the elasticsearch directly to query data.
-Elasticsearch even supports just using `curl` to access the data.
+You could also you the RethinkDB directly to query data.
 
 ## System Requirements
 The cache server can be run on any machine that has Python 2.7 installed and has network access to your Shotgun server.
 
-In order to run Elasticsearch or Kibana you'll need to install the Java Development Kit.
-More information about the requirements can be found here:  
-http://www.elastic.co/guide/en/elasticsearch/hadoop/current/requirements.html
-
-You will need to have [Elasticsearch](https://www.elastic.co/downloads/elasticsearch) installed and running.
-This can be as simple as downloading, unzipping, and running
-```
-$ PATH_TO_ELASTIC_SEARCH/bin/elasticsearch
-```
-
-The only thing you have to change to the default Elasticsearch installation is allow Groovy scripting.  
-To do this just add this line to the `config/elasticsearch.yaml` inside your elasticsearch folder.
-```
-script.groovy.sandbox.enabled: true
-```
-
-In addition, I recommend installing [Kibana](https://www.elastic.co/downloads/kibana) to visualize your cache database and stats.
-Again the process can be as simple as downloading, unzipping, and running
-```
-$ PATH_TO_KIBANA/bin/kibana
-```
-
-When setting up Kibana, I recommend using an index pattern of `shotguncache-entity-*` and using the `created_at` field for the timestamp
-
+You'll need to install RethinkDB on your server.
+More information about the requirements and installation can be found here:  
+http://rethinkdb.com/docs/install/
 
 ### Required Python Modules
 - [Shotgun Python API](https://github.com/shotgunsoftware/python-api) v3.0+
 - [ZeroMQ](http://zeromq.org/bindings:python)
 - [yaml](http://pyyaml.org/)
 - [ruamel.yaml](https://pypi.python.org/pypi/ruamel.yaml/0.6)
-- [elasticsearch](https://elasticsearch-py.readthedocs.org/en/master/)
+- [rethinkdb](http://rethinkdb.com/docs/install-drivers/python/)
 
 
 ## Setup
@@ -100,7 +75,6 @@ https://support.shotgunsoftware.com/entries/21193476-How-to-create-and-manage-AP
 After you've run the setup, make any changes required to the generated entity config files.
 The entity configs are stored as json files and you can adjust them by:
 - Removing any fields from the `fields` key you don't want to cache.  
-- Adding shotgun filters to the `filters` key to limit the cache
 
 
 ## Starting the server
@@ -123,7 +97,9 @@ Once started the server will import all new entities from Shotgun in one batch, 
 
 - Project specific schema for entity config manager?
 - Binary support for images, thumbnails, etc...
-
+- Implement support for filtering entities that are cached.
+	- This is easy to do on initial import
+	- However, we need some way to maintain the filters through Event Log updates
 - Figure out a way to handle storing of event log entries
 	- No easy way to load event log entries for before the cache started due to lack of support
 	for filtering based on the `meta` field.
