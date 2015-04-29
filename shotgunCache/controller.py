@@ -319,7 +319,7 @@ class DatabaseController(object):
             LOG.debug("Untracked field updated: {0}".format(attrName))
             return
 
-        table = rethinkdb.table(meta['entity_type'])
+        table = rethinkdb.table(entityConfig['table'])
         entity = table.get(meta['entity_id'])
 
         if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
@@ -382,6 +382,10 @@ class DatabaseController(object):
 
             body.setdefault(field, fieldDefault)
 
+        # We don't get an update for the project field, so
+        # we need to add that here from the event log entry
+        body['project'] = entry['project']
+
         if 'created_at' in entityConfig['fields']:
             body['created_at'] = entry['created_at']
         if 'created_by' in entityConfig['fields']:
@@ -431,6 +435,6 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = rethinkdb.table(meta['entity_type']).insert(body).run(self.rethink)
+        result = rethinkdb.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
