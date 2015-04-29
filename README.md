@@ -6,7 +6,7 @@ This aims to reduce the delay when accessing the data stored in Shotgun.
 
 On average queries to Shotgun take between 100-500 ms, with the caching layer this can be reduced to 10-20 ms.
 
-We've utilized RethinkDB as the database backend due to its speed, scalability, and query capabilities.  
+We've utilized [RethinkDB](http://rethinkdb.com/) as the database backend due to its speed, scalability, and query capabilities.  
 It's a schema-less database, but still supports joining and merging via querys.
 
 ## How it works
