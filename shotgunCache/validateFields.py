@@ -33,7 +33,7 @@ class FieldValidator(object):
         self.results = []
 
     def start(self, raiseExc=True):
-        LOG.info("Starting Validate Counts")
+        LOG.info("Starting Validate Fields")
         self.launchWorkers()
         self.run()
         self.terminateWorkers()
@@ -195,7 +195,7 @@ class FieldValidateWorker(ValidateWorker):
                 missingFromCache = dict([(_id, cacheMap[_id]) for _id in missingIDsFromCache])
 
                 missingIDsFromShotgun = shotgunIDSet.difference(cacheIDSet)
-                missingFromShotgun = dict([(_id, cacheMap[_id]) for _id in missingIDsFromShotgun])
+                missingFromShotgun = dict([(_id, shotgunMap[_id]) for _id in missingIDsFromShotgun])
 
             # Compare the data for each
             failed = False
