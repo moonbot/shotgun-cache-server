@@ -2,14 +2,19 @@ import logging
 import datetime
 import multiprocessing
 import fnmatch
+import urllib
+from dateutil.parser import parse as dtparse
 
 import zmq
-import rethinkdb
+import rethinkdb as r
 
 import entityConfig
 import entityImporter
 import monitor
 import utils
+
+import threading
+import urllib
 
 __all__ = [
     'DatabaseController',
@@ -61,9 +66,9 @@ class DatabaseController(object):
 
         # Create the database
         dbName = self.rethink.db
-        if self.rethink.db not in rethinkdb.db_list().run(self.rethink):
+        if self.rethink.db not in r.db_list().run(self.rethink):
             LOG.info("Creating rethink database: {0}".format(dbName))
-            rethinkdb.db_create(dbName).run(self.rethink)
+            r.db_create(dbName).run(self.rethink)
 
         self.run()
 
@@ -145,7 +150,7 @@ class DatabaseController(object):
 
         # Get the list of cached entity types
         tableTemplate = self.config['rethink_entity_table_template']
-        existingTables = rethinkdb.table_list().run(self.rethink)
+        existingTables = r.table_list().run(self.rethink)
 
         existingCacheTables = []
         tablePattern = tableTemplate.format(type="*")
@@ -160,21 +165,22 @@ class DatabaseController(object):
         LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
         for table in unusedCacheTables:
             LOG.info("Deleting table: {0}".format(table))
-            rethinkdb.table_drop(table).run(self.rethink)
+            r.table_drop(table).run(self.rethink)
 
     def post_entities(self, entityConfig, entities):
         LOG.debug("Posting entities")
 
         tableName = entityConfig['table']
 
-        if tableName not in rethinkdb.table_list().run(self.rethink):
+        if tableName not in r.table_list().run(self.rethink):
             LOG.debug("Creating table for type: {0}".format(entityConfig.type))
-            rethinkdb.table_create(tableName).run(self.rethink)
+            r.table_create(tableName).run(self.rethink)
 
         for entity in entities:
             # Get rid of extra data found in sub-entities
             # We don't have a way to reliably keep these up to date except
             # for the type and id
+            imageJobs = []
             entitySchema = self.entityConfigManager.schema[entityConfig.type]
             for field, val in entity.items():
                 if field not in entitySchema:
@@ -188,11 +194,20 @@ class DatabaseController(object):
                 elif fieldDataType == 'entity':
                     val = utils.getBaseEntity(val)
                     entity[field] = val
+                # Originally was storing dates and times as rethink date and time objects
+                # but found this to be much slower than just storing strings
+                # and converting to date objects when needed for filtering
 
+        if len(imageJobs):
+            for thread in imageJobs:
+                print 'waiting for downloading images'
+                thread.join()
+                print 'download images complete!'
         # TODO
         # Since we aren't deleting the existing table
         # Need to delete any extra entities at the end
-        result = rethinkdb.table(tableName).insert(entities, conflict="replace").run(self.rethink)
+        result = r.table(tableName).insert(entities, conflict="replace").run(self.rethink)
+        LOG.debug("Posted entities")
         if result['errors']:
             raise IOError(result['first_error'])
 
@@ -286,10 +301,10 @@ class DatabaseController(object):
 
         LOG.debug("Posting stat: {0}".format(statDict['type']))
         statTable = self.config['rethink_stat_table_template'].format(type=statDict['type'])
-        if statTable not in rethinkdb.table_list().run(self.rethink):
-            rethinkdb.table_create(statTable).run(self.rethink)
+        if statTable not in r.table_list().run(self.rethink):
+            r.table_create(statTable).run(self.rethink)
 
-        rethinkdb.table(statTable).insert(statDict).run(self.rethink)
+        r.table(statTable).insert(statDict).run(self.rethink)
 
     def filterEventsBeforeImport(self, eventLogEntries):
         result = []
@@ -319,7 +334,7 @@ class DatabaseController(object):
             LOG.debug("Untracked field updated: {0}".format(attrName))
             return
 
-        table = rethinkdb.table(entityConfig['table'])
+        table = r.table(entityConfig['table'])
         entity = table.get(meta['entity_id'])
 
         if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
@@ -347,6 +362,15 @@ class DatabaseController(object):
                 return
 
             val = meta['new_value']
+
+            if meta['field_data_type'] == 'date_time' and val is not None:
+                # Parse the date time value
+                # Can be in these 2 formats:
+                #  - Fri Dec 10 06:00:00 UTC 2010
+                #  - 2014-05-29 22:00:00 UTC
+                val = dtparse(val)
+                val = val.strftime("%Y-%m-%dT%H:%M:%SZ")
+
             result = entity.update({attrName: val}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
@@ -396,7 +420,7 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = rethinkdb.table(entityConfig['table']).insert(body).run(self.rethink)
+        result = r.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
@@ -404,7 +428,7 @@ class DatabaseController(object):
         meta = entry['meta']
         LOG.debug("Deleting entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
-        result = rethinkdb.table(entityConfig['table']).get(meta['entity_id']).delete().run(self.rethink)
+        result = r.table(entityConfig['table']).get(meta['entity_id']).delete().run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
@@ -435,6 +459,6 @@ class DatabaseController(object):
         if 'updated_by' in entityConfig['fields']:
             body['updated_by'] = utils.getBaseEntity(entry['user'])
 
-        result = rethinkdb.table(entityConfig['table']).insert(body).run(self.rethink)
+        result = r.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])

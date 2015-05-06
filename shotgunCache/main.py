@@ -320,6 +320,28 @@ class Parser(object):
         if rethink_db:
             configTemplate['rethink']['db'] = rethink_db
 
+        print("\nAttachments and image fields will be downloaded to the following location."
+              "\nThis should be a location accessible via an web server over http.")
+
+        downloads_path = askUser(
+            "Downloads Path ({0}): ".format(configTemplate['downloads_path']),
+        )
+        if downloads_path:
+            configTemplate['downloads_path'] = downloads_path
+
+        print("\nProvide the base url for accessing the files via the downloads path."
+              "\nThis will be used when replacing attachment urls from shotgun"
+              "\nEx:"
+              "\n    https://yoursite.shotgunstudio.com/thumbnail/api_image/467?AccessKeyId=IyyBuUnjhanYcy2Aojr"
+              "\n    -> http://your-web-server/ENTITY_TYPE/FIELD/your_attachment"
+              "\n       ^^^^^^^^^^^^^^^^^^^^^^")
+
+        http_url_prefix = askUser(
+            "HTTP Base URL ({0}): ".format(configTemplate['http_url_prefix']),
+        )
+        if http_url_prefix:
+            configTemplate['http_url_prefix'] = http_url_prefix
+
         configFilePath = os.path.join(configPath, 'config.yaml')
         with open(configFilePath, 'w') as f:
             data = ruamel.yaml.dump(configTemplate, Dumper=ruamel.yaml.RoundTripDumper, indent=4)
@@ -329,6 +351,15 @@ class Parser(object):
         if not os.path.exists(entityConfigFolder):
             LOG.debug("Creating entity config folder: {0}".format(entityConfigFolder))
             os.mkdir(entityConfigFolder)
+
+        downloads_path = configTemplate['downloads_path']
+        if not os.path.isabs(downloads_path):
+            downloads_path = os.path.join(configPath, downloads_path)
+            if not os.path.exists(downloads_path):
+                LOG.debug("Creating downloads folder: {0}".format(downloads_path))
+                os.makedirs(downloads_path)
+        if not os.path.exists(downloads_path):
+            LOG.warning("Downloads path doesn't exist.  This should be created before starting the server.")
 
         print("\nWhich entities would you like to cache?\nThis should be a space separated list of Shotgun entity types.\nYou can also leave this blank and specify these later using 'shotgunCache create-entity-configs'\n")
         entityTypes = askUser("Entity Types (Ex: Asset Shot): ", required=False)

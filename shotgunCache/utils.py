@@ -1,16 +1,21 @@
 import os
 import re
+import time
+import cgi
 import datetime
 import logging
 from copy import deepcopy
 from collections import Mapping, MutableMapping
 import json
 
+import urllib
+
 import yaml
 import rethinkdb
 import shotgun_api3 as sg
 
 __all__ = [
+    'get_image_filename_from_url_header',
     'ShotgunAPIWrapper',
     'convertStrToDatetime',
     'addNumberSign',
@@ -30,11 +35,57 @@ __all__ = [
     'del_deep_item',
     'Config',
     'History',
+    'UTC',
 ]
 
 
 LOG = logging.getLogger(__name__)
 
+
+ZERO = datetime.timedelta(0)
+
+import mbotenv
+import debug
+
+@debug.timeIt()
+def get_image_filename_from_url_header(url):
+    res = urllib.urlopen(url)
+    info = res.info()
+    filename = None
+    if 'Content-Disposition' in info:
+        header = info['Content-Disposition']
+        value, params = cgi.parse_header(header)
+        filename = params['filename']
+    else:
+        mimeType = info.type
+        if mimeType == 'image/jpeg':
+            filename = 'image.jpg'
+        elif mimeType == 'image/png':
+            filename = 'image.png'
+        else:
+            raise TypeError("Unexpected mime type: {0}".format(mimeType))
+
+    return filename
+
+@debug.timeIt()
+def download(url, dest):
+    res = urllib.urlopen(url)
+    with open(dest, 'w') as f:
+        f.write(res.read())
+
+# A UTC class.
+
+class UTC(datetime.tzinfo):
+    """UTC"""
+
+    def utcoffset(self, dt):
+        return ZERO
+
+    def tzname(self, dt):
+        return "UTC"
+
+    def dst(self, dt):
+        return ZERO
 
 class ShotgunAPIWrapper(sg.Shotgun):
     """
@@ -42,8 +93,31 @@ class ShotgunAPIWrapper(sg.Shotgun):
     Returning the raw data from json
     """
     def _transform_inbound(self, data):
-        # Skip transforming inbound data so it correctly matches for our proxy
-        return data
+        #NOTE: The time zone is removed from the time after it is transformed
+        #to the local time, otherwise it will fail to compare to datetimes
+        #that do not have a time zone.
+        # if self.config.convert_datetimes_to_utc:
+        #     _change_tz = lambda x: x.replace(tzinfo=sg.shotgun.SG_TIMEZONE.utc)\
+        #         .astimezone(sg.shotgun.SG_TIMEZONE.local)
+        # else:
+        #     _change_tz = None
+
+        def _inbound_visitor(value):
+            if isinstance(value, basestring):
+                if len(value) == 20 and self._DATE_TIME_PATTERN.match(value):
+                    try:
+                        # strptime was not on datetime in python2.4
+                        value = datetime.datetime(
+                            *time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")[:6])
+                    except ValueError:
+                        return value
+                    value = value.replace(tzinfo=sg.shotgun.SG_TIMEZONE.utc)
+                    value = value.isoformat()
+                    return value
+
+            return value
+
+        return self._visit_data(data, _inbound_visitor)
 
 
 def convertStrToDatetime(dateStr):

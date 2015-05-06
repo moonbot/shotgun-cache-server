@@ -219,9 +219,6 @@ class EntityConfigManager(object):
                 fieldDataType = fieldSchema.get('data_type', {}).get('value', None)
                 if fieldDataType == 'multi_entity':
                     fieldConfig['mapping'] = {'type': 'nested', 'include_in_parent': True}
-                elif fieldDataType == 'image':
-                    # Not supported yet
-                    continue
 
                 fieldsConfig[field] = fieldConfig
             entityConfig['fields'] = fieldsConfig

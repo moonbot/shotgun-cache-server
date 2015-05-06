@@ -105,9 +105,8 @@ class CountValidateWorker(object):
             entityConfig = self.entityConfigs[work['configType']]
 
             LOG.debug("Getting Shotgun counts for type: '{0}'".format(work['configType']))
-            sgResult = self.sg.summarize(entityConfig.type, [], summary_fields=[{'field': 'id', 'type': 'count'}])
-
-            sgCount = sgResult['summaries']['id']
+            sgResult = self.sg.find(entityConfig.type, [], ['id'])
+            sgCount = len(sgResult)
 
             cacheCount = 0
             try:

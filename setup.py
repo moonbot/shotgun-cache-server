@@ -42,6 +42,7 @@ setup(
         'ruamel.yaml>=0.8',
         'pyzmq>=13.1.0',
         'shotgun_api3>=3.0.19',
+        'python-dateutil>=2.4.2',
     ],
     zip_safe=False,
     keywords='shotgunCache',

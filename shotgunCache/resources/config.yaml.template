@@ -38,6 +38,17 @@ zmq_controller_work_url: tcp://0.0.0.0:5557
 # Cache server
 enable_stats: true
 
+# Where to store downloaded files for fields
+# These should be stored on a server with http access.
+# All fields containing attachments or images will be downloaded
+# to this folder, and the field's url value will be replaced
+# with an http url derived from the http_url_prefix
+# By default the downloads_path is relative to the config folder
+# Ex:
+#   images for thumbnails
+downloads_path: data
+http_url_prefix: http://localhost
+
 # List of fields with default values
 # If not specified, then None/null will be used
 shotgun_field_type_defaults:

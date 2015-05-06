@@ -9,6 +9,7 @@ import multiprocessing
 
 import rethinkdb
 
+from main import CONFIG_PATH_ENV_KEY
 import utils
 
 __all__ = [
@@ -91,6 +92,34 @@ class ImportManager(object):
 
         LOG.debug("Imported {0} entities".format(self.totalEntitiesImported))
 
+    def finalize_import_for_entity_type(self, entityType):
+        LOG.info("Imported all entities for type '{0}'".format(entityType))
+        entityConfig = self.controller.entityConfigManager.getConfigForType(entityType)
+
+        # Get a list of
+        cachedEntityIDs = set(rethinkdb
+            .table(entityConfig['table'])
+            .map(lambda asset: asset['id'])
+            .coerce_to('array')
+            .run(self.controller.rethink)
+        )
+        importedEntityIDs = set(self.idsPerType[entityType])
+        diffIDs = cachedEntityIDs.difference(importedEntityIDs)
+
+        if len(diffIDs):
+            # Delete these extra entities
+            # This allows us to update the cache in place without
+            # having the drop the table before the import, allowing for
+            # a more seamless import / update process
+            LOG.info("Deleting extra entities found in cache with IDs: {0}".format(diffIDs))
+            rethinkdb.db('shotguncache').table(entityConfig['table']).get_all(rethinkdb.args(diffIDs)).delete().run(self.controller.rethink)
+
+        self.config.history.setdefault('config_hashes', {})[entityType] = entityConfig.hash
+        self.config.history.setdefault('cached_entity_types', {})[entityType] = self.importTimestampsPerType[entityType]
+        self.config.history.save()
+
+        self.activeWorkItemsPerType.pop(entityType)
+
     def createPostSocket(self):
         workPostContext = zmq.Context()
         self.workPostSocket = workPostContext.socket(zmq.PUSH)
@@ -116,6 +145,7 @@ class ImportManager(object):
             importer = ImportWorker(
                 config=self.config,
                 entityConfigs=entityConfigs,
+                schema=self.controller.entityConfigManager.schema,
             )
             proc = multiprocessing.Process(target=importer.start)
             proc.start()
@@ -141,7 +171,7 @@ class ImportManager(object):
 
         for page in range(counts['pageCount']):
             getEntitiesWork = {
-                'type': 'getEntities',
+                'type': 'loadEntities',
                 'id': self.workID,
                 'page': page + 1,
                 'configType': entityType
@@ -150,7 +180,36 @@ class ImportManager(object):
             self.activeWorkItemsPerType[entityType].append(self.workID)
             self.workID += 1
 
-    def handle_entitiesImported(self, work):
+    def handle_loadedEntities(self, work):
+        entityType = work['work']['configType']
+
+        prepareEntitiesWork = {
+            'type': 'prepareEntities',
+            'id': self.workID,
+            'page': work['work']['page'],
+            'configType': entityType,
+            'data': work['data']
+        }
+        self.workPostSocket.send_pyobj(prepareEntitiesWork)
+        self.activeWorkItemsPerType[entityType].append(self.workID)
+        self.workID += 1
+
+        # Store the timestamp for the import
+        # We'll use this to discard old EventLogEntities that happened before the import
+        # However, eventlogentry's that are created while importing will still be applied
+        timestamps = self.importTimestampsPerType.setdefault(entityType, {})
+        timestamps.setdefault('startImportTimestamp', work['data']['startImportTimestamp'])
+
+    def handle_downloadedFile(self, work):
+        entityType = work['work']['configType']
+
+        # TODO
+        # Merge in download path into entity
+
+        if not len(self.activeWorkItemsPerType[entityType]):
+            self.finalize_import_for_entity_type(entityType)
+
+    def handle_preparedEntities(self, work):
         entities = work['data']['entities']
         entityType = work['work']['configType']
         pageCount = self.countsPerType[entityType]['pageCount']
@@ -166,41 +225,24 @@ class ImportManager(object):
             pageCount=pageCount,
         ))
 
+        itemsToDownload = work['data']['itemsToDownload']
+        if len(work['data']['itemsToDownload']):
+            for item in itemsToDownload:
+                work = {
+                    'type': 'downloadFile',
+                    'data': item,
+                    'id': self.workID,
+                    'configType': entityType,
+                }
+                self.workPostSocket.send_pyobj(work)
+                self.activeWorkItemsPerType[entityType].append(self.workID)
+                self.workID += 1
+
         entityConfig = self.controller.entityConfigManager.getConfigForType(entityType)
         self.controller.post_entities(entityConfig, entities)
 
-        # Store the timestamp for the import
-        # We'll use this to discard old EventLogEntities that happened before the import
-        # However, eventlogentry's that are created while importing will still be applied
-        timestamps = self.importTimestampsPerType.setdefault(entityType, {})
-        timestamps.setdefault('startImportTimestamp', work['data']['startImportTimestamp'])
-
         if not len(self.activeWorkItemsPerType[entityType]):
-            LOG.info("Imported all entities for type '{0}'".format(entityType))
-
-            # Get a list of
-            cachedEntityIDs = set(rethinkdb
-                .table(entityConfig['table'])
-                .map(lambda asset: asset['id'])
-                .coerce_to('array')
-                .run(self.controller.rethink)
-            )
-            importedEntityIDs = set(self.idsPerType[entityType])
-            diffIDs = cachedEntityIDs.difference(importedEntityIDs)
-
-            if len(diffIDs):
-                # Delete these extra entities
-                # This allows us to update the cache in place without
-                # having the drop the table before the import, allowing for
-                # a more seamless import / update process
-                LOG.info("Deleting extra entities found in cache with IDs: {0}".format(diffIDs))
-                rethinkdb.db('shotguncache').table(entityConfig['table']).get_all(rethinkdb.args(diffIDs)).delete().run(self.controller.rethink)
-
-            self.config.history.setdefault('config_hashes', {})[entityType] = entityConfig.hash
-            self.config.history.setdefault('cached_entity_types', {})[entityType] = self.importTimestampsPerType[entityType]
-            self.config.history.save()
-
-            self.activeWorkItemsPerType.pop(entityType)
+            self.finalize_import_for_entity_type(entityType)
 
     def post_countWork(self, entityConfigs, workSocket):
         """
@@ -261,10 +303,11 @@ class ImportManager(object):
 
 
 class ImportWorker(object):
-    def __init__(self, config, entityConfigs):
+    def __init__(self, config, entityConfigs, schema):
         super(ImportWorker, self).__init__()
         self.config = config
         self.entityConfigs = dict([(c.type, c) for c in entityConfigs])
+        self.schema = schema
 
         self.sg = None
         self.incomingContext = None
@@ -329,13 +372,119 @@ class ImportWorker(object):
         }
         self.workPostSocket.send_pyobj(result)
 
-    def handle_getEntities(self, work):
-        LOG.debug("Importing Entities for type '{0}' on page {1} on process {2}".format(work['configType'], work['page'], os.getpid()))
+    def handle_downloadFile(self, work):
+        url = work['data']['url']
+        destFolder = work['data']['destFolder']
+        LOG.info("Downloading {0} on process {1}".format(url, os.getpid()))
+        st = time.time()
+        filename = utils.get_image_filename_from_url_header(url)
+        print("filename: {0}".format(filename)) # TESTING
+        dest = os.path.join(destFolder, filename)
+        dirPath = os.path.dirname(dest)
+        print("dirPath: {0}".format(dirPath)) # TESTING
+        if not os.path.exists(dirPath):
+            os.makedirs(dirPath)
+        print("dest: {0}".format(dest)) # TESTING
+        utils.download(url, dest)
+        total = (time.time() - st) * 1000  # ms
+        LOG.debug("Downloaded {0} in {1:0.2f} ms".format(dest, total))
+
+        result = {
+            'type': 'downloadedFile',
+            'data': {
+                'duration': total,
+            },
+            'work': work,
+        }
+        self.workPostSocket.send_pyobj(result)
+
+    def handle_prepareEntities(self, work):
+        LOG.debug("Preparing Entities for type '{0}' on page {1} on process {2}".format(work['configType'], work['page'], os.getpid()))
+        startPrepareTimestamp = datetime.datetime.utcnow().isoformat()
+
+        entityType = work['configType']
+        entityConfig = self.entityConfigs[entityType]
+        entities = work['data']['entities']
+
+        # # TODO
+        # attachmentFields = []
+        # for field in entityConfig.get('fields', {}):
+        #     fieldSchema = self.schema[entityType].get(field, None)
+        #     if not fieldSchema:
+        #         continue
+
+        #     print("fieldSchema: {0}".format(fieldSchema)) # TESTING
+        #     dataType = fieldSchema.get('data_type', {}).get('value', None)
+        #     print("dataType: {0}".format(dataType)) # TESTING
+        #     if dataType in ['image']:
+        #         attachmentFields.append(field)
+        # print("attachmentFields: {0}".format(attachmentFields)) # TESTING
+        # # Handle images / attachments
+
+        itemsToDownload = []
+
+        for entity in entities:
+            # Get rid of extra data found in sub-entities
+            # We don't have a way to reliably keep these up to date except
+            # for the type and id
+            entitySchema = self.schema[entityConfig.type]
+            for field, val in entity.items():
+                # Originally was storing dates and times as rethink date and time objects
+                # but found this to be much slower than just storing strings
+                # and converting to date objects when needed for filtering
+                if field not in entitySchema:
+                    continue
+                if field in ['type', 'id']:
+                    continue
+                fieldDataType = entitySchema[field].get('data_type', {}).get('value', None)
+                if fieldDataType == 'multi_entity':
+                    val = [utils.getBaseEntity(e) for e in val]
+                    entity[field] = val
+                elif fieldDataType == 'entity':
+                    val = utils.getBaseEntity(val)
+                    entity[field] = val
+                elif fieldDataType == 'image' and val is not None:
+                    # Extensions are dynamically added on based on data type
+                    print("base url: {0}".format(val)) # TESTING
+                    subFolder = os.path.join(entityType, str(entity['id']))
+                    print("subFolder: {0}".format(subFolder)) # TESTING
+                    downloadsPath = self.config['downloads_path']
+                    if not os.path.isabs(downloadsPath):
+                        downloadsPath = os.path.join(os.environ[CONFIG_PATH_ENV_KEY], downloadsPath)
+                    downloadsPath = os.path.abspath(downloadsPath)
+                    destFolder = os.path.join(downloadsPath, subFolder)
+                    itemsToDownload.append(
+                        {
+                            'url': val,
+                            'destFolder': destFolder,
+                            'entityID': entity['id'],
+                            'entityType': entityType,
+                            'field': field,
+                        }
+                    )
+                    # newURL = os.path.join(self.config['http_url_prefix'], subPath)
+                    # print("newURL: {0}".format(newURL)) # TESTING
+                    # entity[field] = newURL
+
+        data = work['data']
+        data.update({
+            'startPrepareTimestamp': startPrepareTimestamp,
+            'itemsToDownload': itemsToDownload,
+        })
+        result = {
+            'type': 'preparedEntities',
+            'data': data,
+            'work': work,
+        }
+        self.workPostSocket.send_pyobj(result)
+
+    def handle_loadEntities(self, work):
+        LOG.debug("Loading Entities for type '{0}' on page {1} on process {2}".format(work['configType'], work['page'], os.getpid()))
         startImportTimestamp = datetime.datetime.utcnow().isoformat()
         entityConfig = self.entityConfigs[work['configType']]
         entities = self.getEntities(entityConfig, work['page'])
         result = {
-            'type': 'entitiesImported',
+            'type': 'loadedEntities',
             'data': {
                 'entities': entities,
                 'startImportTimestamp': startImportTimestamp,
@@ -362,9 +511,13 @@ class ImportWorker(object):
         return result
 
     def getEntityCount(self, entityConfig):
-        result = self.sg.summarize(
+        # Switched to find until shotgun bug is fixed
+        # that results in summarize returning a different count
+        # Stems from Tasks getting created with no project assigned
+        # sg.find will still count these, but summarize will not
+        result = self.sg.find(
             entity_type=entityConfig.type,
             filters=[],
-            summary_fields=[{'field': 'id', 'type': 'count'}],
+            fields=['id'],
         )
-        return result['summaries']['id']
+        return len(result)
