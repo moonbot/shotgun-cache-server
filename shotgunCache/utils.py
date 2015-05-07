@@ -2,25 +2,34 @@ import os
 import re
 import time
 import cgi
+import glob
 import datetime
 import logging
+import urlparse
 from copy import deepcopy
 from collections import Mapping, MutableMapping
 import json
 
-import urllib
+import gevent
+import requests
 
 import yaml
 import rethinkdb
 import shotgun_api3 as sg
 
+from geventconnpool import ConnectionPool
+
+
 __all__ = [
-    'get_image_filename_from_url_header',
+    'download_file_for_field',
+    'download',
     'ShotgunAPIWrapper',
-    'convertStrToDatetime',
+    'ShotgunConnectionPool',
+    'RethinkConnectionPool',
+    'convert_str_to_datetime',
     'addNumberSign',
-    'getBaseEntity',
-    'prettyJson',
+    'get_base_entity',
+    'pretty_json',
     'chunks',
     'combine_dict',
     'update_dict',
@@ -41,37 +50,113 @@ __all__ = [
 
 LOG = logging.getLogger(__name__)
 
-
 ZERO = datetime.timedelta(0)
 
-import mbotenv
-import debug
+def download_file_for_field(config, entity, field, url):
+    # Extensions are dynamically added on based on data type
+    # Group by 1000s so folders don't have too many items
+    idGroup = str(int(round(entity['id'], -3)))
+    subPath = os.path.join(entity['type'], idGroup, str(entity['id']), field)
+    destPath = os.path.join(config.downloadsFolderPath, subPath)  # Excludes the extension, which is added during download
+    dirPath = os.path.dirname(destPath)
 
-@debug.timeIt()
-def get_image_filename_from_url_header(url):
-    res = urllib.urlopen(url)
-    info = res.info()
-    filename = None
-    if 'Content-Disposition' in info:
-        header = info['Content-Disposition']
-        value, params = cgi.parse_header(header)
-        filename = params['filename']
+    if not os.path.exists(dirPath):
+        os.makedirs(dirPath)
     else:
-        mimeType = info.type
-        if mimeType == 'image/jpeg':
-            filename = 'image.jpg'
-        elif mimeType == 'image/png':
-            filename = 'image.png'
+        # Delete existing files
+        pattern = destPath + '.*'
+        existing = glob.glob(pattern)
+        for path in existing:
+            LOG.debug("Removing old file: {0}".format(path))
+            os.remove(path)
+
+    if url is None:
+        return {field: None}
+
+    destPath = download(url, destPath, autoExtension=True)
+    destExt = os.path.splitext(destPath)[-1]
+    http_path = os.path.join(config['http_url_prefix'], subPath + destExt)
+    result = {
+        field: http_path
+    }
+    return result
+
+def download(url, dest, autoExtension=False):
+    res = requests.get(url, stream=True)
+    if autoExtension:
+        if 'content-disposition' in res.headers:
+            header = res.headers['content-disposition']
+            value, params = cgi.parse_header(header)
+            filename = params['filename']
+            # LOG.debug("Found extension in content-disposition: {0}".format(header))
+            ext = os.path.splitext(filename)[-1]
         else:
-            raise TypeError("Unexpected mime type: {0}".format(mimeType))
+            cType = res.headers['content-type']
+            if cType == 'image/jpeg':
+                ext = '.jpg'
+            elif cType == 'image/png':
+                ext = '.png'
+            else:
+                raise TypeError("Unexpected content type: {0}".format(cType))
+            # LOG.debug("Found extension in content-type: {0}".format(cType))
+        dest = str(dest) + ext
 
-    return filename
+    with open(dest, 'wb') as f:
+        for chunk in res.iter_content(chunk_size=1024):
+            if chunk:
+                f.write(chunk)
+                f.flush()
 
-@debug.timeIt()
-def download(url, dest):
-    res = urllib.urlopen(url)
-    with open(dest, 'w') as f:
-        f.write(res.read())
+    return dest
+
+
+class ShotgunConnectionPool(ConnectionPool):
+    def __init__(self, config, *args, **kwargs):
+        self.config = config
+        super(ShotgunConnectionPool, self).__init__(*args, **kwargs)
+
+    @property
+    def api_url(self):
+        return urlparse.urlunparse((
+            self.sg.config.scheme,
+            self.sg.config.server,
+            self.sg.config.api_path,
+            None,
+            None,
+            None
+        ))
+
+    def _new_connection(self):
+        LOG.debug('Creating new Shotgun Connection')
+        sg = self.config.create_shotgun_connection()
+        return sg
+
+    def _keepalive(self, sg):
+        LOG.debug("Keep alive Shotgun Connection")
+        sg.info()
+
+
+# class ElasticConnectionPool(ConnectionPool):
+#     def __init__(self, config, *args, **kwargs):
+#         self.config = config
+#         super(ElasticConnectionPool, self).__init__(*args, **kwargs)
+
+#     def _new_connection(self):
+#         LOG.debug('Creating new Elastic Connection')
+#         return self.config.createElasticConnection()
+
+
+class RethinkConnectionPool(ConnectionPool):
+    def __init__(self, config, *args, **kwargs):
+        self.config = config
+        super(RethinkConnectionPool, self).__init__(*args, **kwargs)
+
+    def _new_connection(self):
+        LOG.debug('Creating new Elastic Connection')
+        return self.config.create_rethink_connection()
+
+
+
 
 # A UTC class.
 
@@ -120,7 +205,7 @@ class ShotgunAPIWrapper(sg.Shotgun):
         return self._visit_data(data, _inbound_visitor)
 
 
-def convertStrToDatetime(dateStr):
+def convert_str_to_datetime(dateStr):
     return datetime.datetime(*map(int, re.split('[^\d]', dateStr)[:-1]))
 
 
@@ -158,7 +243,7 @@ def addNumberSign(num):
     return num
 
 
-def getBaseEntity(entity):
+def get_base_entity(entity):
     """
     Remove extra information from an entity dict
     keeping only type and id
@@ -231,7 +316,7 @@ def combine_dict(a, b, copy=True):
     return result
 
 
-def prettyJson(obj):
+def pretty_json(obj):
     return json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': '))
 
 
@@ -488,11 +573,11 @@ class Config(DeepDict):
     _history = None
 
     @classmethod
-    def loadFromYaml(cls, yamlPath):
+    def load_from_yaml(cls, yamlPath):
         result = yaml.load(open(yamlPath, 'r').read())
         return cls(result)
 
-    def createShotgunConnection(self, raw=True, **kwargs):
+    def create_shotgun_connection(self, raw=True, **kwargs):
         cls = ShotgunAPIWrapper if raw else sg.Shotgun
         kw = self['shotgun'].copy()
         kw.update(kwargs)
@@ -501,7 +586,7 @@ class Config(DeepDict):
         )
         return sgConn
 
-    def createRethinkConnection(self, **kwargs):
+    def create_rethink_connection(self, **kwargs):
         kw = self['rethink'].copy()
         kw.update(kwargs)
         conn = rethinkdb.connect(**kw)
@@ -531,6 +616,38 @@ class Config(DeepDict):
         historyPath = os.path.join(configPath, self['entity_config_foldername'])
         return historyPath
 
+    @property
+    def downloadsFolderPath(self):
+        from main import CONFIG_PATH_ENV_KEY
+        downloadsPath = self['downloads_path']
+        if not os.path.isabs(downloadsPath):
+            downloadsPath = os.path.join(os.environ[CONFIG_PATH_ENV_KEY], downloadsPath)
+        downloadsPath = os.path.abspath(downloadsPath)
+        return downloadsPath
+
+
+
+def watch_folder_for_changes(path, callback, interval=3):
+    path = os.path.abspath(path)
+    LOG.debug("Watching path for changes: {0}".format(path))
+
+    def get_mod_times():
+        result = {}
+        for name in os.listdir(path):
+            fullPath = os.path.join(path, name)
+            mtime = os.path.getmtime(fullPath)
+            result[name] = mtime
+        return result
+
+    base_mtimes = get_mod_times()
+    while True:
+        LOG.debug("Checking cached entity configs")
+        new_mtimes = get_mod_times()
+        if new_mtimes != base_mtimes:
+            LOG.debug("Cached entity configs have changed")
+            base_mtimes = new_mtimes
+            callback()
+        gevent.sleep(interval)
 
 class History(DeepDict):
     """
@@ -545,8 +662,13 @@ class History(DeepDict):
         self.load()
 
     def load(self):
+        """
+        Read the history file contents from disk
+        """
         if os.path.exists(self.historyFilePath):
             result = yaml.load(open(self.historyFilePath, 'r').read())
+            if result is None:
+                result = {}
         else:
             LOG.info("No existing history file at {0}".format(self.historyFilePath))
             result = {}
@@ -554,5 +676,8 @@ class History(DeepDict):
         return result
 
     def save(self):
+        """
+        Save the history contents to disk
+        """
         with open(self.historyFilePath, 'w') as f:
-            yaml.dump(dict(self), f, default_flow_style=False, indent=4)
+            yaml.safe_dump(dict(self), f, default_flow_style=False, indent=4)

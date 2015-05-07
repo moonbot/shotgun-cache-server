@@ -6,6 +6,9 @@ shotgunCache
 Copyright (c) 2015 Moonbot Studios. All rights reserved.
 """
 
+from gevent import monkey
+monkey.patch_all()
+
 from controller import *
 from monitor import *
 from entityConfig import *

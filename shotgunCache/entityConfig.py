@@ -24,7 +24,7 @@ class EntityConfig(Mapping):
         self.hash = None
 
         self.config = None
-        self.loadConfig()
+        self.load_config()
 
     def __getitem__(self, key):
         return self.config.__getitem__(key)
@@ -35,7 +35,7 @@ class EntityConfig(Mapping):
     def __len__(self):
         return len(self.config)
 
-    def loadConfig(self):
+    def load_config(self):
         """
         Read the config from the json file
         """
@@ -62,7 +62,7 @@ class EntityConfigManager(object):
         super(EntityConfigManager, self).__init__()
         self.config = config
 
-        self.sg = self.config.createShotgunConnection()
+        self.sg = self.config.create_shotgun_connection()
 
         self.configs = {}
         self.schema = None
@@ -73,13 +73,14 @@ class EntityConfigManager(object):
     def load(self):
         LOG.debug("Retrieving schema from shotgun")
         self.schema = self.sg.schema_read()
-        self.loadConfigFromFiles()
+        self.load_config_from_files()
 
-    def loadConfigFromFiles(self):
+    def load_config_from_files(self):
         """
         Read the config files and create EntityConfig instances
         """
-        for path in self.getConfigFilePaths():
+        self.configs = {}
+        for path in self.get_config_file_paths():
             typ = os.path.basename(os.path.splitext(path)[0])
             if typ == 'EventLogEntry':
                 raise NotImplemented("Can't cache EventLogEntries")
@@ -88,10 +89,10 @@ class EntityConfigManager(object):
                 typ,
                 path,
             )
-            self.validateConfig(config)
+            self.validate_config(config)
             self.configs[config.type] = config
 
-    def validateConfig(self, config):
+    def validate_config(self, config):
         """
         Validate an entity config dictionary
 
@@ -111,7 +112,7 @@ class EntityConfigManager(object):
             if field not in typeSchema:
                 raise ValueError("Field '{0}' for Type '{1}' missing from Shotgun schema, defined in {2}".format(field, config.type, config.configPath))
 
-    def getConfigFilePaths(self):
+    def get_config_file_paths(self):
         """
         Get a list of all config file paths containing entity configs
         Returns:
@@ -130,7 +131,7 @@ class EntityConfigManager(object):
         LOG.debug("Found {0} Entity Config Files".format(len(result)))
         return result
 
-    def allConfigs(self):
+    def all_configs(self):
         """
         Get a list of all EntityConfig instances
 
@@ -139,7 +140,7 @@ class EntityConfigManager(object):
         """
         return self.configs.values()
 
-    def getEntityTypes(self):
+    def get_entity_types(self):
         """
         Get a list of all entity types we have configs for
 
@@ -148,7 +149,7 @@ class EntityConfigManager(object):
         """
         return self.configs.keys()
 
-    def getConfigForType(self, type):
+    def get_config_for_type(self, type):
         """
         Get the entity config instance for the supplied type
 
@@ -157,17 +158,13 @@ class EntityConfigManager(object):
         """
         return self.configs.__getitem__(type)
 
-    def createEntityConfigFiles(self, types, tableTemplate=None, ignoreFields=[]):
+    def create_entity_config_files(self, types, tablePrefix=None, ignoreFields=[]):
         """
         Create the entity config json files for the supplied shotgun entity types
 
         Args:
             types (list of str): List of Shotgun Entity Types
-            tableTemplate (str): Template for the rethinkdb table name
-                supplied format keywords:
-                    type - Shotgun type
-                Ex:
-                    entity-{type}
+            tablePrefix (str): Prefix for the rethinkdb table name
             ignoreFields (list of str): global list of field names to exclude.
                 These can use wildcards using fnmatch
                 Ex:
@@ -195,7 +192,7 @@ class EntityConfigManager(object):
 
             entityConfig = OrderedDict()
 
-            table = tableTemplate.format(type=sgType)
+            table = tablePrefix + str(sgType)
 
             entityConfig['table'] = table
 

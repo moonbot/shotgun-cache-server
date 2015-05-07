@@ -1,11 +1,9 @@
 import logging
 import datetime
-import multiprocessing
-import fnmatch
-import urllib
+import gevent
+import gevent.queue
 from dateutil.parser import parse as dtparse
 
-import zmq
 import rethinkdb as r
 
 import entityConfig
@@ -13,44 +11,39 @@ import entityImporter
 import monitor
 import utils
 
-import threading
-import urllib
-
 __all__ = [
-    'DatabaseController',
+    'ShotgunCacheServer',
 ]
 
 LOG = logging.getLogger(__name__)
 
 
-class DatabaseController(object):
+class ShotgunCacheServer(object):
     """
-    Main Database controller
+    Main controller
     Launches all other processes and coordinates communication
     """
     def __init__(self, config):
-        super(DatabaseController, self).__init__()
+        super(ShotgunCacheServer, self).__init__()
         self.config = config
 
-        self.rethink = self.config.createRethinkConnection()
-        self.sg = self.config.createShotgunConnection()
-        self.firstEventPostSinceImport = False
+        self.rethink = self.config.create_rethink_connection()
+        self.sg = self.config.create_shotgun_connection()
+
+        self.workQueue = gevent.queue.Queue()
 
         self.entityConfigManager = entityConfig.EntityConfigManager(config=self.config)
-        self._init_monitor()
-        self._init_entityImportManager()
+        self.monitor = monitor.ShotgunEventMonitor(self.config, self.workQueue)
+        self.monitorGreenlet = None
+        self.entityConfigWatcherGreenlet = None
 
-    def _init_monitor(self):
-        self.monitorContext = zmq.Context()
-        self.monitorSocket = self.monitorContext.socket(zmq.PULL)
-
-        self.monitor = monitor.ShotgunEventMonitor(config=self.config)
-        self.monitorProcess = multiprocessing.Process(target=self.monitor.start)
-        self.monitorProcess.daemon = True
-
-    def _init_entityImportManager(self):
-        self.entityImportManager = entityImporter.ImportManager(
+        self.importer = entityImporter.EntityImporter(
             config=self.config,
+            controller=self,
+        )
+        self.eventLogHandler = EventLogHandler(
+            config=self.config,
+            workQueue=self.workQueue,
             controller=self,
         )
 
@@ -60,29 +53,35 @@ class DatabaseController(object):
         if not len(self.entityConfigManager.configs):
             raise IOError("No entity configs found to cache in {0}".format(self.config['entity_config_folder']))
 
-        self.monitor.setEntityTypes(self.entityConfigManager.getEntityTypes())
-        self.monitorSocket.bind(self.config['zmq_controller_work_url'])
-        self.monitorProcess.start()
-
         # Create the database
         dbName = self.rethink.db
         if self.rethink.db not in r.db_list().run(self.rethink):
             LOG.info("Creating rethink database: {0}".format(dbName))
             r.db_create(dbName).run(self.rethink)
 
+        self.monitor.set_entity_types(self.entityConfigManager.get_entity_types())
+        self.monitorGreenlet = gevent.spawn(self.monitor.start)
+
+        self.entityConfigWatcherGreenlet = gevent.spawn(
+            utils.watch_folder_for_changes,
+            self.config.entityConfigFolderPath,
+            self.importer.auto_import_entities,
+            interval=self.config['history_check_interval']
+        )
+
         self.run()
 
     def run(self):
         LOG.info("Starting Main Event Loop")
         while True:
-            work = self.monitorSocket.recv_pyobj()
+            work = self.workQueue.get()
 
             if not isinstance(work, dict):
                 raise TypeError("Invalid work item, expected dict: {0}".format(work))
 
             if LOG.getEffectiveLevel() < 10:
                 # Only if we really want it
-                LOG.debug("Work: \n" + utils.prettyJson(work))
+                LOG.debug("Work: \n" + utils.pretty_json(work))
 
             meth_name = 'handle_{0}'.format(work['type'])
             if hasattr(self, meth_name):
@@ -90,137 +89,49 @@ class DatabaseController(object):
             else:
                 raise ValueError("Unhandled work type: {0}".format(work['type']))
 
-    def handle_monitorStarted(self, work):
+            gevent.sleep(0)
+
+    def handle_monitor_started(self, work):
         # We wait until the monitor signals that it's running
         # this way we don't miss any events that occur while importing
-        self.importEntities()
+        self.handle_import_entities(work)
 
-    def handle_stat(self, work):
-        self.post_stat(work['data'])
+    def handle_import_entities(self, work):
+        LOG.info("Importing Cached Entities")
+        self.importer.auto_import_entities()
 
-    def handle_eventLogEntries(self, work):
+    def handle_event_log_entries(self, work):
         eventLogEntries = work['data']['entities']
         LOG.info("Posting {0} Events".format(len(eventLogEntries)))
-        self.post_eventLogEntryChanges(eventLogEntries)
+        self.eventLogHandler.process_entries(eventLogEntries)
 
-    def handle_reloadChangedConfigs(self, work):
-        LOG.info("Reloading changed configs")
+    def handle_latest_event_log_entry(self, work):
+        entity = work['data']['entity']
+        LOG.debug("Setting Latest Event Log Entry ID to {0}".format(entity['id']))
         self.config.history.load()
-        self.importEntities()
-
-    def handle_latestEventLogEntry(self, work):
-        LOG.debug("Setting Latest Event Log Entry: {0}".format(work['data']['entity']))
-        self.config.history['latest_event_log_entry'] = work['data']['entity']
+        self.config.history['latest_event_log_entry'] = entity
         self.config.history.save()
+        # TODO - need to ignore this save when importing entities?
 
-    def importEntities(self):
-        configs = self.entityConfigManager.allConfigs()
+    def handle_stat(self, work):
+        return
+        self.post_stat(work['data'])
 
-        def checkConfigNeedsUpdate(cacheConfig):
-            if cacheConfig.hash is None:
-                return True
-            elif cacheConfig.hash != self.config.history.get('config_hashes', {}).get(cacheConfig.type, None):
-                return True
-            return False
 
-        configsToLoad = []
-        configsToLoad.extend(filter(checkConfigNeedsUpdate, configs))
-        configsToLoad.extend(filter(lambda c: c.type not in self.config.history.get('cached_entity_types', {}), configs))
+class EventLogHandler(object):
+    def __init__(self, controller, config, workQueue):
+        super(EventLogHandler, self).__init__()
+        self.controller = controller
+        self.config = config
+        self.sg = config.create_shotgun_connection()
+        self.workQueue = workQueue
+        self.rethink = config.create_rethink_connection()
 
-        # Deduplicate
-        configsToLoad = dict([(c.type, c) for c in configsToLoad]).values()
-
-        self.deleteUntrackedFromCache(configs)
-
-        if not len(configsToLoad):
-            LOG.info("All entity types have been imported.")
-            return
-
-        LOG.info("Importing {0} entity types into the cache".format(len(configsToLoad)))
-        self.entityImportManager.importEntities(configsToLoad)
-        LOG.info("Import complete!")
-        self.firstEventPostSinceImport = True
-
-    def deleteUntrackedFromCache(self, configs):
-        """
-        Delete data from cache for entities that are no longer cached
-        """
-        if not self.config['delete_cache_for_untracked_entities']:
-            return
-
-        # Get the list of cached entity types
-        tableTemplate = self.config['rethink_entity_table_template']
-        existingTables = r.table_list().run(self.rethink)
-
-        existingCacheTables = []
-        tablePattern = tableTemplate.format(type="*")
-        for table in existingTables:
-            if fnmatch.fnmatch(table, tablePattern):
-                existingCacheTables.append(table)
-
-        usedCacheTables = [c['table'] for c in configs]
-        unusedCacheTables = [t for t in existingCacheTables if t not in usedCacheTables]
-        LOG.debug("Unusesd cache tables: {0}".format(unusedCacheTables))
-
-        LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
-        for table in unusedCacheTables:
-            LOG.info("Deleting table: {0}".format(table))
-            r.table_drop(table).run(self.rethink)
-
-    def post_entities(self, entityConfig, entities):
-        LOG.debug("Posting entities")
-
-        tableName = entityConfig['table']
-
-        if tableName not in r.table_list().run(self.rethink):
-            LOG.debug("Creating table for type: {0}".format(entityConfig.type))
-            r.table_create(tableName).run(self.rethink)
-
-        for entity in entities:
-            # Get rid of extra data found in sub-entities
-            # We don't have a way to reliably keep these up to date except
-            # for the type and id
-            imageJobs = []
-            entitySchema = self.entityConfigManager.schema[entityConfig.type]
-            for field, val in entity.items():
-                if field not in entitySchema:
-                    continue
-                if field in ['type', 'id']:
-                    continue
-                fieldDataType = entitySchema[field].get('data_type', {}).get('value', None)
-                if fieldDataType == 'multi_entity':
-                    val = [utils.getBaseEntity(e) for e in val]
-                    entity[field] = val
-                elif fieldDataType == 'entity':
-                    val = utils.getBaseEntity(val)
-                    entity[field] = val
-                # Originally was storing dates and times as rethink date and time objects
-                # but found this to be much slower than just storing strings
-                # and converting to date objects when needed for filtering
-
-        if len(imageJobs):
-            for thread in imageJobs:
-                print 'waiting for downloading images'
-                thread.join()
-                print 'download images complete!'
-        # TODO
-        # Since we aren't deleting the existing table
-        # Need to delete any extra entities at the end
-        result = r.table(tableName).insert(entities, conflict="replace").run(self.rethink)
-        LOG.debug("Posted entities")
-        if result['errors']:
-            raise IOError(result['first_error'])
-
-        if result['errors']:
-            # TODO
-            # Better error descriptions?
-            raise IOError("Errors occurred creating entities: {0}".format(result))
-
-    def post_eventLogEntryChanges(self, eventLogEntries):
+    def process_entries(self, eventLogEntries):
         if LOG.getEffectiveLevel() < 10:
-            LOG.debug("--- Event Log Entries ---\n{0}\n".format(utils.prettyJson(eventLogEntries)))
+            LOG.debug("--- Event Log Entries ---\n{0}\n".format(utils.pretty_json(eventLogEntries)))
 
-        eventLogEntries = self.filterEventsBeforeImport(eventLogEntries)
+        eventLogEntries = self.filter_incoming_entries(eventLogEntries)
 
         if not len(eventLogEntries):
             return
@@ -230,16 +141,15 @@ class DatabaseController(object):
             entityType, changeType = entry['event_type'].split('_', 3)[1:]
 
             entityType = meta['entity_type']
-            # entityID = meta['entity_id']
 
-            if entityType not in self.entityConfigManager:
+            if entityType not in self.controller.entityConfigManager:
                 # This also excludes special entities such as Version_sg_linked_versions_Connection
                 LOG.debug("Ignoring uncached entity type: {0}".format(entityType))
                 continue
 
-            entityConfig = self.entityConfigManager.getConfigForType(entityType)
+            entityConfig = self.controller.entityConfigManager.get_config_for_type(entityType)
 
-            meth_name = 'post_eventlog_{0}'.format(changeType)
+            meth_name = 'post_entry_{0}'.format(changeType)
             if hasattr(self, meth_name):
                 getattr(self, meth_name)(entry, entityConfig)
             else:
@@ -247,40 +157,12 @@ class DatabaseController(object):
 
         submitFinishTime = datetime.datetime.utcnow()
 
-        # if LOG.getEffectiveLevel() < 10:
-        #     LOG.debug("--- Responses ---\n{0}\n".format(utils.prettyJson(responses)))
-
-        # # It's possible to run into a few errors here when shotgun events occurred while importing
-        # # Someone could modify and then delete an entity before the import is finished
-        # # while importing, we capture this change
-        # # then after importing, we apply the modification from the events that occured while importing
-        # # however, we can't apply the modification because the entity no longer exists
-        # # So on the first event post after importing we ignore DocumentMissingException's
-        # if responses['errors']:
-        #     ignoreError = False
-        #     for request, response in zip(requests, responses['items']):
-        #         for responseEntry in response.values():
-        #             if responseEntry.get('error', None):
-        #                 errStr = responseEntry['error']
-        #                 if errStr.startswith('DocumentMissingException') and self.firstEventPostSinceImport:
-        #                     LOG.warning("Got DocumentMissingException error, but ignoring because it was during import")
-        #                     ignoreError = True
-        #                 else:
-        #                     LOG.error(errStr)
-        #                     LOG.debug("Request:\n{0}".format(utils.prettyJson(request)))
-        #                     LOG.debug("Response:\n{0}".format(utils.prettyJson(response)))
-        #     if not ignoreError:
-        #         raise IOError("Errors occurred creating entities")
-
-        if self.firstEventPostSinceImport:
-            self.firstEventPostSinceImport = False
-
         if self.config['enable_stats']:
             # Post the min/max/avg delay in milliseconds
             delays = []
             for entry in eventLogEntries:
                 createdTime = entry['created_at']
-                createdTime = utils.convertStrToDatetime(createdTime)
+                createdTime = utils.convert_str_to_datetime(createdTime)
                 diff = submitFinishTime - createdTime
                 diff_ms = diff.microseconds / float(1000)
                 delays.append(diff_ms)
@@ -295,36 +177,28 @@ class DatabaseController(object):
             }
             self.post_stat(stat)
 
-    def post_stat(self, statDict):
-        if not self.config['enable_stats']:
-            return
-
-        LOG.debug("Posting stat: {0}".format(statDict['type']))
-        statTable = self.config['rethink_stat_table_template'].format(type=statDict['type'])
-        if statTable not in r.table_list().run(self.rethink):
-            r.table_create(statTable).run(self.rethink)
-
-        r.table(statTable).insert(statDict).run(self.rethink)
-
-    def filterEventsBeforeImport(self, eventLogEntries):
+    def filter_incoming_entries(self, eventLogEntries):
         result = []
         for entry in eventLogEntries:
             entityType, changeType = entry['event_type'].split('_', 3)[1:]
-            importTimestamps = self.config.history['cached_entity_types'][entityType]
-            importTimestamp = utils.convertStrToDatetime(importTimestamps['startImportTimestamp'])
+            importTimestamp = self.config.history.get('cached_entities', {}).get(entityType, {}).get('import-timestamp', None)
+            if importTimestamp is None:
+                continue
+
+            importTimestamp = utils.convert_str_to_datetime(importTimestamp)
 
             # Ignore old event log entries
-            entryTimestamp = utils.convertStrToDatetime(entry['created_at'])
+            entryTimestamp = utils.convert_str_to_datetime(entry['created_at'])
             if entryTimestamp < importTimestamp:
                 LOG.debug("Ignoring EventLogEntry occurring before import of '{0}': {1}".format(entityType, entry['id']))
                 if LOG.getEffectiveLevel() < 10:
-                    LOG.debug("Old Entry: \n" + utils.prettyJson(entry))
+                    LOG.debug("Old Entry: \n" + utils.pretty_json(entry))
                 continue
 
             result.append(entry)
         return result
 
-    def post_eventlog_Change(self, entry, entityConfig):
+    def post_entry_Change(self, entry, entityConfig):
         meta = entry['meta']
 
         LOG.debug("Posting change to entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
@@ -337,25 +211,33 @@ class DatabaseController(object):
         table = r.table(entityConfig['table'])
         entity = table.get(meta['entity_id'])
 
-        if meta.get('field_data_type', '') in ['multi_entity', 'entity']:
+        fieldDataType = meta.get('field_data_type', '')
+        if fieldDataType in ['multi_entity', 'entity']:
             if 'added' in meta and meta['added']:
-                val = [utils.getBaseEntity(e) for e in meta['added']]
+                val = [utils.get_base_entity(e) for e in meta['added']]
                 result = entity.update(lambda e: {attrName: e[attrName].splice_at(-1, val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'removed' in meta and meta['removed']:
-                val = [utils.getBaseEntity(e) for e in meta['removed']]
+                val = [utils.get_base_entity(e) for e in meta['removed']]
                 result = entity.update(lambda e: {attrName: e[attrName].difference(val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'new_value' in meta:
                 val = meta['new_value']
                 if val is not None and isinstance(val, dict):
-                    val = utils.getBaseEntity(val)
+                    val = utils.get_base_entity(val)
                 result = entity.update({attrName: val}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
-
+        elif fieldDataType in ['image']:
+            if meta['new_value'] is not None:
+                sgResult = self.sg.find_one(meta['entity_type'], [['id', 'is', meta['entity_id']]], [meta['attribute_name']])
+                url = sgResult['image']
+            else:
+                url = None
+            updateDict = utils.download_file_for_field(self.config, {'id': meta['entity_id'], 'type': meta['entity_type']}, meta['attribute_name'], url)
+            result = entity.update(updateDict)
         else:
             if meta['entity_type'] not in self.entityConfigManager.configs:
                 LOG.debug("Ignoring entry for non-cached entity type: {0}".format(meta['entity_type']))
@@ -381,11 +263,11 @@ class DatabaseController(object):
                 raise IOError(result['first_error'])
 
         if 'updated_by' in entityConfig['fields']:
-            result = entity.update({'updated_by': utils.getBaseEntity(entry['user'])}).run(self.rethink)
+            result = entity.update({'updated_by': utils.get_base_entity(entry['user'])}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
 
-    def post_eventlog_New(self, entry, entityConfig):
+    def post_entry_New(self, entry, entityConfig):
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
 
@@ -413,18 +295,18 @@ class DatabaseController(object):
         if 'created_at' in entityConfig['fields']:
             body['created_at'] = entry['created_at']
         if 'created_by' in entityConfig['fields']:
-            body['created_by'] = utils.getBaseEntity(entry['user'])
+            body['created_by'] = utils.get_base_entity(entry['user'])
 
         if 'updated_at' in entityConfig['fields']:
             body['updated_at'] = entry['created_at']
         if 'updated_by' in entityConfig['fields']:
-            body['updated_by'] = utils.getBaseEntity(entry['user'])
+            body['updated_by'] = utils.get_base_entity(entry['user'])
 
         result = r.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
 
-    def post_eventlog_Retirement(self, entry, entityConfig):
+    def post_entry_Retirement(self, entry, entityConfig):
         meta = entry['meta']
         LOG.debug("Deleting entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
@@ -432,7 +314,7 @@ class DatabaseController(object):
         if result['errors']:
             raise IOError(result['first_error'])
 
-    def post_eventlog_Revival(self, entry, entityConfig):
+    def post_entry_Revival(self, entry, entityConfig):
         meta = entry['meta']
         entityType, changeType = entry['event_type'].split('_', 3)[1:]
 
@@ -449,16 +331,27 @@ class DatabaseController(object):
             if fieldSchema['data_type']['value'] in ['multi_entity', 'entity']:
                 val = body[field]
                 if isinstance(val, (list, tuple)):
-                    val = [utils.getBaseEntity(e) for e in val]
+                    val = [utils.get_base_entity(e) for e in val]
                 else:
-                    val = utils.getBaseEntity()
+                    val = utils.get_base_entity()
                 body[field] = val
 
         if 'updated_at' in entityConfig['fields']:
             body['updated_at'] = entry['created_at']
         if 'updated_by' in entityConfig['fields']:
-            body['updated_by'] = utils.getBaseEntity(entry['user'])
+            body['updated_by'] = utils.get_base_entity(entry['user'])
 
         result = r.table(entityConfig['table']).insert(body).run(self.rethink)
         if result['errors']:
             raise IOError(result['first_error'])
+
+    def post_stat(self, statDict):
+        if not self.config['enable_stats']:
+            return
+
+        LOG.debug("Posting stat: {0}".format(statDict['type']))
+        statTable = self.config['rethink_stat_table_prefix'] + str(statDict['type'])
+        if statTable not in r.table_list().run(self.rethink):
+            r.table_create(statTable).run(self.rethink)
+
+        r.table(statTable).insert(statDict).run(self.rethink)

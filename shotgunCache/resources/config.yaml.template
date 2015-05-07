@@ -27,12 +27,8 @@ entity_config_foldername: entity-configs
 
 # Template for naming the rethinkdb tables
 rethink_schema_table: schema
-rethink_entity_table_template: entity_{type}
-rethink_stat_table_template: stat_{type}
-
-# Main url for the cache server to listen for input from the monitor
-# or interact with the command line while active
-zmq_controller_work_url: tcp://0.0.0.0:5557
+rethink_entity_table_prefix: entity_
+rethink_stat_table_prefix: stat_
 
 # Whether to track stats on the performance of the
 # Cache server
@@ -49,6 +45,11 @@ enable_stats: true
 downloads_path: data
 http_url_prefix: http://localhost
 
+# Seconds to wait between checking for history file changes
+# This is how the server checks when cached entities
+# are added, removed or changed
+history_check_interval: 3
+
 # List of fields with default values
 # If not specified, then None/null will be used
 shotgun_field_type_defaults:
@@ -60,16 +61,12 @@ delete_cache_for_untracked_entities: true
 
 # How entities are intially imported or triggered for reimport
 import:
-
-    # No. of processes to use when retreiving information from shotgun
-    # All calls to shotgun will be distributed among each of these
-    processes: 4
+    # Max # of connection to shotgun and rethink during imports
+    max_shotgun_connections: 10
+    max_rethink_connections: 10
 
     # Limit for each of the shotgun find requests
     batch_size: 250
-
-    zmq_pull_url: tcp://0.0.0.0:5558
-    zmq_post_url: tcp://0.0.0.0:5559
 
 
 # Settings for the shotgun Monitor

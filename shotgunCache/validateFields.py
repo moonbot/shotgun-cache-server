@@ -211,8 +211,8 @@ class FieldValidateWorker(ValidateWorker):
                 shotgunData = utils.sortMultiEntityFieldsByID(self.entityConfigManager.schema, shotgunData)
                 cacheData = utils.sortMultiEntityFieldsByID(self.entityConfigManager.schema, cacheData)
 
-                shotgunJson = utils.prettyJson(shotgunData)
-                cacheJson = utils.prettyJson(cacheData)
+                shotgunJson = utils.pretty_json(shotgunData)
+                cacheJson = utils.pretty_json(cacheData)
                 if shotgunJson != cacheJson:
                     diff = difflib.unified_diff(
                         str(shotgunJson).split('\n'),

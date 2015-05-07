@@ -3,7 +3,6 @@ import datetime
 import socket
 import logging
 
-import zmq
 import shotgun_api3 as sg
 
 __all__ = [
@@ -23,28 +22,27 @@ class ShotgunEventMonitor(object):
     """
     eventSubTypes = ['New', 'Change', 'Retirement', 'Revival']
 
-    def __init__(self, config):
+    def __init__(self, config, workQueue):
         super(ShotgunEventMonitor, self).__init__()
         self.config = config
+        self.workQueue = workQueue
 
         self.latestEventLogEntry = self.config.history.get('latest_event_log_entry', None)
 
         self.entityTypes = []
 
         self.sg = None
-        self.context = None
-        self.socket = None
 
         self._latestEventID = None
         self._latestEventIDPath = None
         self._loopStartTime = None
 
+    def set_entity_types(self, entityTypes):
+        self.entityTypes = entityTypes
+
     def start(self):
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.PUSH)
-        self.socket.connect(self.config['zmq_controller_work_url'])
-        self.loadInitialEventID()
-        self.buildBaseFilters()
+        self.load_initial_eventID()
+        self.build_base_filters()
         self.run()
 
     def run(self):
@@ -52,39 +50,40 @@ class ShotgunEventMonitor(object):
         totalEventsInLoop = 0
         reset = False
         heartbeatTime = None
-        self.socket.send_pyobj({'type': 'monitorStarted'})
+        self.workQueue.put({'type': 'monitor_started'})
         while True:
+            LOG.debug("Checking for new events")
             if reset:
                 totalEventsInLoop = 0
                 timeToPost = 0
                 self._loopStartTime = time.time()
 
-            events = self.getNewEvents()
+            events = self.get_new_events()
 
             if len(events):
                 LOG.debug("Received {0} new events".format(len(events)))
 
                 postStartTime = time.time()
-                body = {
-                    'type': 'eventLogEntries',
+                work = {
+                    'type': 'event_log_entries',
                     'data': {
                         'entities': events,
                     },
                 }
 
-                self.socket.send_pyobj(body)
+                self.workQueue.put(work)
                 timeToPost = time.time() - postStartTime
 
-                self.setLatestEventLogEntry(events[-1])
+                self.set_latest_event_log_entry(events[-1])
                 totalEventsInLoop += len(events)
                 reset = False
             else:
-                self.fetchDelay()
+                self.fetch_delay()
                 reset = True
 
                 # Only report status for loops with events
                 if totalEventsInLoop:
-                    statData = {
+                    work = {
                         'type': 'stat',
                         'data': {
                             'type': 'shotgun_event_update',
@@ -94,12 +93,12 @@ class ShotgunEventMonitor(object):
                             'created_at': datetime.datetime.utcnow().isoformat(),
                         },
                     }
-                    self.socket.send_pyobj(statData)
+                    self.workQueue.put(work)
 
             # Track monitor status so we can graph when it goes down
             currTime = time.time()
             if heartbeatTime is None or currTime - heartbeatTime > self.config['monitor']['heartbeat_interval']:
-                statData = {
+                work = {
                     'type': 'stat',
                     'data': {
                         'type': 'monitor_status',
@@ -107,10 +106,10 @@ class ShotgunEventMonitor(object):
                         'uptime': time.time() - processStartTime,  # seconds
                     },
                 }
-                self.socket.send_pyobj(statData)
+                self.workQueue.put(work)
                 heartbeatTime = currTime
 
-    def getNewEvents(self):
+    def get_new_events(self):
         """
         Fetch the new EventLogEntry entities from Shotgun
         Loops until successful
@@ -144,7 +143,8 @@ class ShotgunEventMonitor(object):
                 # self.connect(force=True)
                 LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
                 conn_attempts += 1
-            except Exception:
+            except Exception, e:
+                print("e: {0}".format(e)) # TESTING
                 # self.connect(force=True)
                 LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
                 conn_attempts += 1
@@ -155,16 +155,7 @@ class ShotgunEventMonitor(object):
 
         return result
 
-    def prepareEntityEvents(self, events):
-        result = []
-        for event in events:
-            result.append({
-                'type': 'entityUpdate',
-                'data': event
-            })
-        return result
-
-    def loadInitialEventID(self):
+    def load_initial_eventID(self):
         if self.latestEventLogEntry is None:
             LOG.debug("Loading initial EventLogEntry id")
 
@@ -185,25 +176,26 @@ class ShotgunEventMonitor(object):
                     LOG.warning("Unable to connect to Shotgun after max attempts, retrying in {0} seconds".format(self.config['monitor.conn_retry_sleep']))
                     time.sleep(self.config['monitor.conn_retry_sleep'])
 
-            self.setLatestEventLogEntry(result)
+            self.set_latest_event_log_entry(result)
 
-    def setLatestEventLogEntry(self, entity):
+    def set_latest_event_log_entry(self, entity):
         _entity = dict([(k, v) for k, v in entity.items() if k in ['id', 'created_at']])
-        self.socket.send_pyobj({
-            'type': 'latestEventLogEntry',
+        work = {
+            'type': 'latest_event_log_entry',
             'data': {
                 'entity': _entity
             }
-        })
+        }
+        self.workQueue.put(work)
         self.latestEventLogEntry = _entity
 
     def connect(self, force=False):
         if force or self.sg is None:
             LOG.debug("Connecting to Shotgun")
-            self.sg = self.config.createShotgunConnection()
+            self.sg = self.config.create_shotgun_connection()
         return self.sg
 
-    def fetchDelay(self):
+    def fetch_delay(self):
         diff = 0
         if self._loopStartTime is not None:
             diff = time.time() - self._loopStartTime
@@ -211,15 +203,12 @@ class ShotgunEventMonitor(object):
         if sleepTime:
             time.sleep(sleepTime)
 
-    def setEntityTypes(self, entityTypes):
-        self.entityTypes = entityTypes
-
-    def buildBaseFilters(self):
+    def build_base_filters(self):
         filters = []
-        filters.extend(self.buildEntityTypeFilters())
+        filters.extend(self.build_entity_type_filters())
         self.baseFilters = filters
 
-    def buildEntityTypeFilters(self):
+    def build_entity_type_filters(self):
         result = {
             "filter_operator": "any",
             "filters": []

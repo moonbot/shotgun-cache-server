@@ -366,11 +366,11 @@ class Parser(object):
         if entityTypes:
             entityTypes = entityTypes.split(' ')
 
-            config = shotgunCache.Config.loadFromYaml(configFilePath)
-            controller = shotgunCache.DatabaseController(config)
+            config = shotgunCache.Config.load_from_yaml(configFilePath)
+            controller = shotgunCache.ShotgunCacheServer(config)
             newConfigs = controller.entityConfigManager.createEntityConfigFiles(
                 entityTypes,
-                tableTemplate=controller.config['rethink_entity_table_template'],
+                tablePrefix=controller.config['rethink_entity_table_prefix'],
                 ignoreFields=controller.config['create_entity_config']['field_patterns_to_ignore'],
             )
             for entityType, configPath in newConfigs:
@@ -387,12 +387,12 @@ class Parser(object):
     def handle_createEntityConfigs(self, parseResults):
         import shotgunCache
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
-        controller = shotgunCache.DatabaseController(config)
-        newConfigs = controller.entityConfigManager.createEntityConfigFiles(
+        controller = shotgunCache.ShotgunCacheServer(config)
+        newConfigs = controller.entityConfigManager.create_entity_config_files(
             parseResults['entityTypes'],
-            tableTemplate=controller.config['rethink_entity_table_template'],
+            tablePrefix=controller.config['rethink_entity_table_prefix'],
             ignoreFields=controller.config['create_entity_config']['field_patterns_to_ignore'],
         )
         for entityType, configPath in newConfigs:
@@ -401,16 +401,16 @@ class Parser(object):
     def handle_run(self, parseResults):
         import shotgunCache
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
-        controller = shotgunCache.DatabaseController(config)
+        controller = shotgunCache.ShotgunCacheServer(config)
         controller.start()
 
     def handle_validateCounts(self, parseResults):
         import shotgunCache
         print('Validating Counts...')
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
         entityConfigManager = shotgunCache.EntityConfigManager(config=config)
         entityConfigManager.load()
@@ -478,7 +478,7 @@ class Parser(object):
         import shotgunCache
         print('Validating Data...')
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
         entityConfigManager = shotgunCache.EntityConfigManager(config=config)
         entityConfigManager.load()
@@ -535,7 +535,7 @@ class Parser(object):
                 print('-' * self.bannerWidth)
                 for missingEntity in result[key]:
                     errors += 1
-                    print(shotgunCache.prettyJson(missingEntity))
+                    print(shotgunCache.pretty_json(missingEntity))
                 print
 
         # Different Items
@@ -568,13 +568,13 @@ class Parser(object):
             print('ERROR: No config types specified')
             return 1
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
         entityConfigManager = shotgunCache.EntityConfigManager(config=config)
         LOG.info("Loading entity configs")
         entityConfigManager.load()
 
-        availableTypes = entityConfigManager.getEntityTypes()
+        availableTypes = entityConfigManager.get_entity_types()
         configTypes = parseResults['entityTypes']
         if parseResults['all']:
             configTypes = availableTypes
@@ -583,10 +583,11 @@ class Parser(object):
                 if configType not in availableTypes:
                     print("WARNING: No cache configured for entity type '{0}'".format(configType))
 
+        # TODO - build better system for this
         for configType in configTypes:
-            if configType in config.history['config_hashes']:
+            if configType in config.get('cached_entities', {}):
                 print("Clearing saved hash for '{0}'".format(configType))
-                config.history['config_hashes'][configType] = None
+                config.get('cached_entities', {}).get(configType, {})['config-hash'] = None
 
         config.history.save()
 
@@ -613,14 +614,14 @@ class Parser(object):
     def handle_resetStats(self, parseResults):
         import shotgunCache
 
-        config = shotgunCache.Config.loadFromYaml(self.configFilePath)
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
-        statTableTemplate = config['rethink_stat_table_template']
+        statTablePrefix = config['rethink_stat_table_prefix']
 
         rethink = rethinkdb.connect(**config['rethink'])
         existingTables = rethink.table_list()
 
-        pattern = statTableTemplate.format(type='*')
+        pattern = statTablePrefix + '*'
 
         tablesToDrop = []
         if parseResults['all']:
@@ -629,7 +630,7 @@ class Parser(object):
             if not len(parseResults['statTypes']):
                 raise ValueError("No stat types supplied, and '--all' was not supplied")
             for statType in parseResults['statTypes']:
-                table = statTableTemplate.format(type=statType)
+                table = statTablePrefix + str(statType)
                 if table not in existingTables:
                     LOG.warning("No table exists for type '{0}': {1}".format(statType, table))
                 else:
