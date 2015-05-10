@@ -177,6 +177,7 @@ class EntityConfigManager(object):
         """
         LOG.debug("Reading Shotgun schema")
         schema = self.sg.schema_read()
+        defaultCachedDisplayNameMap = self.config['create_entity_config']['default_cached_display_name_dependent_fields']
 
         LOG.debug("Creating config files")
         result = []
@@ -212,6 +213,11 @@ class EntityConfigManager(object):
             for field in sorted(fields):
                 fieldConfig = {}
                 fieldSchema = typeSchema[field]
+
+                if field == 'cached_display_name':
+                    fieldConfig['dependent_fields'] = defaultCachedDisplayNameMap.get(sgType, [])
+                    if fieldConfig['dependent_fields'] == []:
+                        LOG.warning("No dependent_fields defined for 'cached_display_name' for entity type '{0}'".format(sgType))
 
                 fieldDataType = fieldSchema.get('data_type', {}).get('value', None)
                 if fieldDataType == 'multi_entity':

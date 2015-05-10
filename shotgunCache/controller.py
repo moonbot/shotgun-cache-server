@@ -203,9 +203,9 @@ class EventLogHandler(object):
 
         LOG.debug("Posting change to entity: {meta[entity_type]}:{meta[entity_id]}".format(meta=meta))
 
-        attrName = entry['attribute_name']
-        if attrName not in entityConfig['fields']:
-            LOG.debug("Untracked field updated: {0}".format(attrName))
+        field = entry['attribute_name']
+        if field not in entityConfig['fields']:
+            LOG.debug("Untracked field updated: {0}".format(field))
             return
 
         table = r.table(entityConfig['table'])
@@ -215,19 +215,19 @@ class EventLogHandler(object):
         if fieldDataType in ['multi_entity', 'entity']:
             if 'added' in meta and meta['added']:
                 val = [utils.get_base_entity(e) for e in meta['added']]
-                result = entity.update(lambda e: {attrName: e[attrName].splice_at(-1, val)}).run(self.rethink)
+                result = entity.update(lambda e: {field: e[field].splice_at(-1, val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'removed' in meta and meta['removed']:
                 val = [utils.get_base_entity(e) for e in meta['removed']]
-                result = entity.update(lambda e: {attrName: e[attrName].difference(val)}).run(self.rethink)
+                result = entity.update(lambda e: {field: e[field].difference(val)}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
             elif 'new_value' in meta:
                 val = meta['new_value']
                 if val is not None and isinstance(val, dict):
                     val = utils.get_base_entity(val)
-                result = entity.update({attrName: val}).run(self.rethink)
+                result = entity.update({field: val}).run(self.rethink)
                 if result['errors']:
                     raise IOError(result['first_error'])
         elif fieldDataType in ['image']:
@@ -239,7 +239,7 @@ class EventLogHandler(object):
             updateDict = utils.download_file_for_field(self.config, {'id': meta['entity_id'], 'type': meta['entity_type']}, meta['attribute_name'], url)
             result = entity.update(updateDict)
         else:
-            if meta['entity_type'] not in self.entityConfigManager.configs:
+            if meta['entity_type'] not in self.controller.entityConfigManager.configs:
                 LOG.debug("Ignoring entry for non-cached entity type: {0}".format(meta['entity_type']))
                 return
 
@@ -253,7 +253,16 @@ class EventLogHandler(object):
                 val = dtparse(val)
                 val = val.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            result = entity.update({attrName: val}).run(self.rethink)
+            result = entity.update({field: val}).run(self.rethink)
+            if result['errors']:
+                raise IOError(result['first_error'])
+
+        # Check if we need to update the cached_display_name
+        cachedDisplayNameLinks = entityConfig['fields'].get('cached_display_name', {}).get('dependent_fields', [])
+        if field in cachedDisplayNameLinks:
+            LOG.debug("Loading 'cached_display_name' for dependent field update '{0}' on entity type '{1}'".format(field, entityConfig.type))
+            sgResult = self.sg.find(entityConfig.type, [['id', 'is', meta['entity_id']]], ['cached_display_name'])
+            result = entity.update({'cached_display_name': val}).run(self.rethink)
             if result['errors']:
                 raise IOError(result['first_error'])
 
@@ -277,7 +286,7 @@ class EventLogHandler(object):
 
         # Load the default values for each field
         for field in entityConfig['fields']:
-            fieldSchema = self.entityConfigManager.schema[entityType][field]
+            fieldSchema = self.controller.entityConfigManager.schema[entityType][field]
 
             if 'data_type' not in fieldSchema:
                 # No data_type for visible field
@@ -326,7 +335,7 @@ class EventLogHandler(object):
 
         # Trim to base entities for nested entities
         for field in body:
-            fieldSchema = self.entityConfigManager.schema[entityType][field]
+            fieldSchema = self.controller.entityConfigManager.schema[entityType][field]
 
             if fieldSchema['data_type']['value'] in ['multi_entity', 'entity']:
                 val = body[field]

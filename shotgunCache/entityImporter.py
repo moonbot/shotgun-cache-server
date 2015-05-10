@@ -125,6 +125,15 @@ class EntityImporter(object):
         entityCount = self.get_entity_counts(config)
         pageCount = int(math.ceil(entityCount / float(self.config['import.batch_size'])))
 
+        tableName = config['table']
+
+        if tableName not in self.existingEntityTables:
+            with self.rethinkPool.get() as conn:
+                if tableName not in r.table_list().run(conn):
+                    LOG.debug("Creating table for type '{0}'".format(config.type))
+                    r.table_create(tableName).run(conn)
+                    self.existingEntityTables.append(tableName)
+
         startImportTimestamp = datetime.datetime.utcnow().isoformat()
         greenlets = [gevent.spawn(self.load_entities_for_config, config, page) for page in range(1, pageCount + 1)]
         gevent.joinall(greenlets)
@@ -205,13 +214,6 @@ class EntityImporter(object):
         LOG.debug("Posting {0} entities for type '{1}'".format(len(entities), config.type))
 
         tableName = config['table']
-
-        if tableName not in self.existingEntityTables:
-            with self.rethinkPool.get() as conn:
-                if tableName not in r.table_list().run(conn):
-                    LOG.debug("Creating table for type '{0}'".format(config.type))
-                    r.table_create(tableName).run(conn)
-                    self.existingEntityTables.append(tableName)
 
         with self.rethinkPool.get() as conn:
             result = r.table(tableName).insert(entities, conflict="replace").run(conn)

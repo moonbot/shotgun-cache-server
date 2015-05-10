@@ -99,10 +99,64 @@ create_entity_config:
     # List of fields name patterns to ignore
     # when creating entity config files
     field_patterns_to_ignore:
-        - cached_display_name
         - pinned
         - visible
         - billboard
         - sg_uploaded_movie
         - sg_uploaded_movie_mp4
         - sg_uploaded_movie_webm
+
+    # Map of which fields affect each entities cached_display_name field
+    # When any of these fields change, the cached_display_name for the
+    # entity is reloaded from Shotgun
+    default_cached_display_name_dependent_fields:
+        ApiUser: [firstname, lastname]
+        Asset: [code]
+        Attachment: [filename]
+        Booking: [id]
+        ClientUser: [name]
+        CustomEntity01: [code]
+        CustomEntity02: [code]
+        CustomEntity03: [code]
+        CustomEntity04: [code]
+        CustomEntity05: [code]
+        CustomEntity08: [code]
+        CustomEntity09: [code]
+        CustomNonProjectEntity01: [code]
+        CustomNonProjectEntity02: [code]
+        CustomNonProjectEntity03: [code]
+        Delivery: [id, title]
+        Department: [name]
+        EventLogEntry: [attribute_name]
+        Group: [code]
+        HumanUser: [name]
+        Icon: [name]
+        LocalStorage: [code]
+        Note: [subject, content]
+        Page: [entity_type]
+        PageHit: [user]
+        PageSetting: [id]
+        PermissionRuleSet: [display_name]
+        Phase: [code]
+        PipelineConfiguration: [code]
+        Playlist: [code]
+        Project: [name]
+        PublishEvent: [code]
+        PublishedFile: [code]
+        PublishedFileDependency: [id]
+        PublishedFileType: [code]
+        Release: [code]
+        Reply: [content]
+        Revision: [code]
+        Scene: [code]
+        Sequence: [code]
+        Shot: [code]
+        Status: [name]
+        Step: [code]
+        Task: [content]
+        TaskDependency: [offset_days]
+        TaskTemplate: [code]
+        Ticket: [id, title]
+        TimeLog: [sg_start_time]
+        Tool: [code]
+        Version: [code]

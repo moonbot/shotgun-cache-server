@@ -626,7 +626,6 @@ class Config(DeepDict):
         return downloadsPath
 
 
-
 def watch_folder_for_changes(path, callback, interval=3):
     path = os.path.abspath(path)
     LOG.debug("Watching path for changes: {0}".format(path))
