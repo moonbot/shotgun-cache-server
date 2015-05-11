@@ -1,11 +1,8 @@
-import os
-import time
 import logging
-import multiprocessing
+import gevent
 import difflib
-import Queue
 
-import rethinkdb
+import rethinkdb as r
 
 import utils
 
@@ -27,98 +24,112 @@ class FieldValidator(object):
         self.filterOperator = filterOperator
         self.allCachedFields = allCachedFields
 
-        self.workQueue = multiprocessing.JoinableQueue()
-        self.resultQueue = multiprocessing.Queue()
-        self.processes = []
-        self.results = []
+        self.shotgunPool = utils.ShotgunConnectionPool(config, config['import']['max_shotgun_connections'])
+        self.rethinkPool = utils.RethinkConnectionPool(config, config['import']['max_rethink_connections'])
 
     def start(self, raiseExc=True):
         LOG.info("Starting Validate Fields")
-        self.launchWorkers()
-        self.run()
-        self.terminateWorkers()
+        return self.run()
 
-        if raiseExc:
-            failed = []
-            for result in self.results:
-                if result['failed']:
-                    failed.append(result)
+    def run(self):
+        greenlets = [gevent.spawn(self.get_fields_for_config, c) for c in self.entityConfigs]
+        gevent.joinall(greenlets)
+        result = [g.value for g in greenlets]
+        return result
 
-            if len(failed):
-                raise RuntimeError("Validation Failed, {0} cached entity type(s) do not match".format(len(failed)))
+    def get_fields_for_config(self, entityConfig):
+        if self.allCachedFields:
+            fields = entityConfig['fields'].keys()
+        else:
+            fields = self.fields[:]
+        fields.append('id')
+        fields.append('type')
+        fields = list(set(fields))
 
-        return self.results
-
-    def launchWorkers(self):
-        processCount = min(len(self.entityConfigs), self.config['validate_counts.processes'])
-        LOG.debug("Launching {0} validate workers".format(processCount))
-        for n in range(processCount):
-            worker = FieldValidateWorker(
-                self.workQueue,
-                self.resultQueue,
-                self.config,
-                self.entityConfigManager,
-                self.entityConfigs,
+        LOG.debug("Getting fields from Shotgun for type: {0}".format(entityConfig.type))
+        with self.shotgunPool.get() as sg:
+            shotgunResult = sg.find(
+                entityConfig.type,
+                filter_operator=self.filterOperator,
                 filters=self.filters,
-                filterOperator=self.filterOperator,
-                fields=self.fields,
-                allCachedFields=self.allCachedFields,
+                fields=fields,
+                order=[{'field_name': 'id', 'direction': 'asc'}]
             )
-            proc = multiprocessing.Process(target=worker.start)
-            proc.start()
-            self.processes.append(proc)
 
-    def run(self):
-        LOG.debug("Adding items to validate queue")
-        for config in self.entityConfigs:
-            data = {'configType': config.type}
-            self.workQueue.put(data)
-        self.workQueue.join()
+        # Convert any nested entities to base entities (type and id only)
+        self.strip_nested_entities(entityConfig, shotgunResult)
 
-        results = []
-        while True:
-            try:
-                result = self.resultQueue.get(False)
-            except Queue.Empty:
-                break
-            else:
-                if result:
-                    results.append(result)
-        self.results = results
+        # Group by id's to match with cache
+        # Group into a dictionary with the id as key
+        shotgunMap = dict([(e['id'], e) for e in shotgunResult])
 
-    def terminateWorkers(self):
-        LOG.debug("Terminating validate workers")
-        for proc in self.processes:
-            proc.terminate()
-        self.processes = []
+        LOG.debug("Getting fields from cache for type: {0}".format(entityConfig.type))
 
+        # Have to batch requests to shotgun in groups of 1024
+        cacheMatches = []
+        LOG.debug("Getting total match count from cache for type: {0}".format(entityConfig.type))
+        with self.rethinkPool.get() as conn:
+            cacheMatches = list(r.table(entityConfig['table'])
+                                .filter(lambda e: e['id'] in shotgunMap.keys())
+                                .pluck(fields)
+                                .run(conn))
 
-class ValidateWorker(object):
-    def __init__(self, workQueue, resultQueue, config, entityConfigManager, entityConfigs, **kwargs):
-        super(ValidateWorker, self).__init__()
-        self.workQueue = workQueue
-        self.resultQueue = resultQueue
-        self.config = config
-        self.entityConfigManager = entityConfigManager
-        self.entityConfigs = dict([(c.type, c) for c in entityConfigs])
+        # Check for missing ids
+        missingFromCache = []
+        missingFromShotgun = []
+        # print("cacheMatches: {0}".format(cacheMatches)) # TESTING
+        cacheMap = dict([(e['id'], e) for e in cacheMatches])
+        if len(cacheMap) != len(shotgunMap):
+            cacheIDSet = set(cacheMap)
+            shotgunIDSet = set(shotgunMap.keys())
 
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+            missingIDsFromCache = cacheIDSet.difference(shotgunIDSet)
+            missingFromCache = dict([(_id, cacheMap[_id]) for _id in missingIDsFromCache])
 
-        self.sg = None
-        self.rethink = None
+            missingIDsFromShotgun = shotgunIDSet.difference(cacheIDSet)
+            missingFromShotgun = dict([(_id, shotgunMap[_id]) for _id in missingIDsFromShotgun])
 
-    def start(self):
-        self.sg = self.config.createShotgunConnection(convert_datetimes_to_utc=False)
-        self.rethink = self.config.createRethinkConnection()
-        self.run()
+        # Compare the data for each
+        failed = False
+        diffs = []
+        for _id, shotgunData in shotgunMap.items():
+            if _id not in cacheMap:
+                continue
+            cacheData = cacheMap[_id]
 
-    def run(self):
-        raise NotImplemented()
+            # Sort the nested entities by ID
+            # Their sort order is not enforced by shotgun
+            # So we can't count on it staying consistent
+            shotgunData = utils.sort_multi_entity_fields_by_id(self.entityConfigManager.schema, shotgunData)
+            cacheData = utils.sort_multi_entity_fields_by_id(self.entityConfigManager.schema, cacheData)
 
+            shotgunJson = utils.pretty_json(shotgunData)
+            cacheJson = utils.pretty_json(cacheData)
+            if shotgunJson != cacheJson:
+                diff = difflib.unified_diff(
+                    str(shotgunJson).split('\n'),
+                    str(cacheJson).split('\n'),
+                    lineterm="",
+                    n=5,
+                )
+                # Skip first 3 lines
+                header = '{type}:{id}\n'.format(type=entityConfig.type, id=_id)
+                [diff.next() for x in range(3)]
+                diff = header + '\n'.join(diff)
+                diffs.append(diff)
 
-class FieldValidateWorker(ValidateWorker):
-    def stripNestedEntities(self, entityConfig, entities):
+        result = {
+            'entityType': entityConfig.type,
+            'failed': failed,
+            'shotgunMatchCount': len(shotgunMap),
+            'cacheMatchCount': len(cacheMap),
+            'missingFromCache': missingFromCache,
+            'missingFromShotgun': missingFromShotgun,
+            'diffs': diffs,
+        }
+        return result
+
+    def strip_nested_entities(self, entityConfig, entities):
         # Strip extra data from nested entities so
         # only type and id remains
         for entity in entities:
@@ -135,107 +146,3 @@ class FieldValidateWorker(ValidateWorker):
                 elif fieldDataType == 'entity':
                     val = utils.getBaseEntity(val)
                     entity[field] = val
-
-    def run(self):
-        workerPID = os.getpid()
-        LOG.debug("Field Validate Worker Running: {0}".format(workerPID))
-        while True:
-            try:
-                work = self.workQueue.get()
-            except Queue.Emtpy:
-                continue
-                time.sleep(0.1)
-
-            entityConfig = self.entityConfigs[work['configType']]
-
-            if self.allCachedFields:
-                fields = entityConfig['fields'].keys()
-            else:
-                fields = self.fields[:]
-            fields.append('id')
-            fields.append('type')
-            fields = list(set(fields))
-
-            LOG.debug("Getting fields from Shotgun for type: {0}".format(work['configType']))
-            shotgunResult = self.sg.find(
-                entityConfig.type,
-                filter_operator=self.filterOperator,
-                filters=self.filters,
-                fields=fields,
-                order=[{'field_name': 'id', 'direction': 'asc'}]
-            )
-
-            # Convert any nested entities to base entities (type and id only)
-            self.stripNestedEntities(entityConfig, shotgunResult)
-
-            # Group by id's to match with cache
-            # Group into a dictionary with the id as key
-            shotgunMap = dict([(e['id'], e) for e in shotgunResult])
-
-            LOG.debug("Getting fields from cache for type: {0}".format(work['configType']))
-
-            # Have to batch requests to shotgun in groups of 1024
-            cacheMatches = []
-            LOG.debug("Getting total match count from cache for type: {0}".format(work['configType']))
-            cacheMatches = list(rethinkdb.table(entityConfig['table'])
-                                .filter(lambda e: e['id'] in shotgunMap.keys())
-                                .pluck(fields)
-                                .run(self.rethink))
-
-            # Check for missing ids
-            missingFromCache = []
-            missingFromShotgun = []
-            # print("cacheMatches: {0}".format(cacheMatches)) # TESTING
-            cacheMap = dict([(e['id'], e) for e in cacheMatches])
-            if len(cacheMap) != len(shotgunMap):
-                cacheIDSet = set(cacheMap)
-                shotgunIDSet = set(shotgunMap.keys())
-
-                missingIDsFromCache = cacheIDSet.difference(shotgunIDSet)
-                missingFromCache = dict([(_id, cacheMap[_id]) for _id in missingIDsFromCache])
-
-                missingIDsFromShotgun = shotgunIDSet.difference(cacheIDSet)
-                missingFromShotgun = dict([(_id, shotgunMap[_id]) for _id in missingIDsFromShotgun])
-
-            # Compare the data for each
-            failed = False
-            diffs = []
-            for _id, shotgunData in shotgunMap.items():
-                if _id not in cacheMap:
-                    continue
-                cacheData = cacheMap[_id]
-
-                # Sort the nested entities by ID
-                # Their sort order is not enforced by shotgun
-                # So we can't count on it staying consistent
-                shotgunData = utils.sortMultiEntityFieldsByID(self.entityConfigManager.schema, shotgunData)
-                cacheData = utils.sortMultiEntityFieldsByID(self.entityConfigManager.schema, cacheData)
-
-                shotgunJson = utils.pretty_json(shotgunData)
-                cacheJson = utils.pretty_json(cacheData)
-                if shotgunJson != cacheJson:
-                    diff = difflib.unified_diff(
-                        str(shotgunJson).split('\n'),
-                        str(cacheJson).split('\n'),
-                        lineterm="",
-                        n=5,
-                    )
-                    # Skip first 3 lines
-                    header = '{type}:{id}\n'.format(type=work['configType'], id=_id)
-                    [diff.next() for x in range(3)]
-                    diff = header + '\n'.join(diff)
-                    diffs.append(diff)
-
-            result = {
-                'work': work,
-                'entityType': work['configType'],
-                'failed': failed,
-                'shotgunMatchCount': len(shotgunMap),
-                'cacheMatchCount': len(cacheMap),
-                'missingFromCache': missingFromCache,
-                'missingFromShotgun': missingFromShotgun,
-                'diffs': diffs,
-            }
-            self.resultQueue.put(result)
-
-            self.workQueue.task_done()

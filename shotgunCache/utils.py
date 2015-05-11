@@ -27,7 +27,7 @@ __all__ = [
     'ShotgunConnectionPool',
     'RethinkConnectionPool',
     'convert_str_to_datetime',
-    'addNumberSign',
+    'add_number_sign',
     'get_base_entity',
     'pretty_json',
     'chunks',
@@ -35,7 +35,7 @@ __all__ = [
     'update_dict',
     'EncodedDict',
     'DeepDict',
-    'sortMultiEntityFieldsByID',
+    'sort_multi_entity_fields_by_id',
     'get_dict_diff',
     'get_deep_keys',
     'has_deep_key',
@@ -209,7 +209,7 @@ def convert_str_to_datetime(dateStr):
     return datetime.datetime(*map(int, re.split('[^\d]', dateStr)[:-1]))
 
 
-def sortMultiEntityFieldsByID(schema, entity):
+def sort_multi_entity_fields_by_id(schema, entity):
     """
     Sort all multi-entity fields in an entity by their ID.
 
@@ -235,7 +235,7 @@ def sortMultiEntityFieldsByID(schema, entity):
     return result
 
 
-def addNumberSign(num):
+def add_number_sign(num):
     if num > 0:
         num = '+' + str(num)
     elif num < 0:

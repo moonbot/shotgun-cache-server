@@ -416,9 +416,9 @@ class Parser(object):
         entityConfigManager.load()
 
         if parseResults['entityTypes']:
-            entityConfigs = [entityConfigManager.getConfigForType(t) for t in parseResults['entityTypes']]
+            entityConfigs = [entityConfigManager.get_config_for_type(t) for t in parseResults['entityTypes']]
         else:
-            entityConfigs = entityConfigManager.allConfigs()
+            entityConfigs = entityConfigManager.all_configs()
 
         if not len(entityConfigs):
             print('No entities are configured to be cached')
@@ -452,8 +452,8 @@ class Parser(object):
                 status=status,
                 sgCount=result['sgCount'],
                 cacheCount=result['cacheCount'],
-                pendingDiff=shotgunCache.addNumberSign(result['pendingDiff']),
-                shotgunDiff=shotgunCache.addNumberSign(shotgunDiff),
+                pendingDiff=shotgunCache.add_number_sign(result['pendingDiff']),
+                shotgunDiff=shotgunCache.add_number_sign(shotgunDiff),
             ))
             totalCounts['sgCount'] += result['sgCount']
             totalCounts['cacheCount'] += result['cacheCount']
@@ -470,8 +470,8 @@ class Parser(object):
             status=status,
             sgCount=totalCounts['sgCount'],
             cacheCount=totalCounts['cacheCount'],
-            shotgunDiff=shotgunCache.addNumberSign(shotgunDiff),
-            pendingDiff=shotgunCache.addNumberSign(totalCounts['pendingDiff']),
+            shotgunDiff=shotgunCache.add_number_sign(shotgunDiff),
+            pendingDiff=shotgunCache.add_number_sign(totalCounts['pendingDiff']),
         ))
 
     def handle_validateFields(self, parseResults):
@@ -484,9 +484,9 @@ class Parser(object):
         entityConfigManager.load()
 
         if parseResults['all']:
-            entityConfigs = entityConfigManager.allConfigs()
+            entityConfigs = entityConfigManager.all_configs()
         elif parseResults['entityTypes']:
-            entityConfigs = [entityConfigManager.getConfigForType(t) for t in parseResults['entityTypes']]
+            entityConfigs = [entityConfigManager.get_config_for_type(t) for t in parseResults['entityTypes']]
         else:
             print('ERROR: No entity types specified')
             return
@@ -561,8 +561,10 @@ class Parser(object):
             print('ERROR: {0} errors found in {0} entities'.format(errors, totalShotgunEntityCount))
 
     def handle_rebuild(self, parseResults):
+        # TODO
+        # Need new way to do this
+        # Probably using rethinkdb as a message queue
         import shotgunCache
-        import zmq
 
         if not parseResults['entityTypes'] and not parseResults['all']:
             print('ERROR: No config types specified')
@@ -590,26 +592,6 @@ class Parser(object):
                 config.get('cached_entities', {}).get(configType, {})['config-hash'] = None
 
         config.history.save()
-
-        if parseResults['live']:
-            url = parseResults['url']
-            if url is None:
-                url = config['zmq_controller_work_url']
-
-            # Check if the server is running, if so, send a rebuild signal
-            context = zmq.Context()
-            socket = context.socket(zmq.PUSH)
-            socket.connect(url)
-
-            work = {
-                'type': 'reloadChangedConfigs',
-                'data': {}
-            }
-            print('Sending reload signal to cache server')
-            socket.send_pyobj(work)
-            print('Reload signal sent to {0}'.format(url))
-        else:
-            print('Entities will be reloaded the next time the server is launched')
 
     def handle_resetStats(self, parseResults):
         import shotgunCache
