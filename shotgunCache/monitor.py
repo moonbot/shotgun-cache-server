@@ -140,12 +140,9 @@ class ShotgunEventMonitor(object):
                 result = _sg.find("EventLogEntry", filters, fields, order, limit=self.config['monitor.max_event_batch_size'])
                 break
             except (sg.ProtocolError, sg.ResponseError, socket.error):
-                # self.connect(force=True)
                 LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
                 conn_attempts += 1
-            except Exception, e:
-                print("e: {0}".format(e)) # TESTING
-                # self.connect(force=True)
+            except Exception:
                 LOG.warning("Unable to connect to Shotgun (attempt {0} of {1})".format(conn_attempts + 1, self.config['monitor.max_conn_retries']))
                 conn_attempts += 1
 

@@ -8,7 +8,7 @@ import json
 import argparse
 import logging
 import fnmatch
-import rethinkdb
+import rethinkdb as r
 
 LOG = logging.getLogger('shotgunCache')
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -561,9 +561,6 @@ class Parser(object):
             print('ERROR: {0} errors found in {0} entities'.format(errors, totalShotgunEntityCount))
 
     def handle_rebuild(self, parseResults):
-        # TODO
-        # Need new way to do this
-        # Probably using rethinkdb as a message queue
         import shotgunCache
 
         if not parseResults['entityTypes'] and not parseResults['all']:
@@ -573,8 +570,8 @@ class Parser(object):
         config = shotgunCache.Config.load_from_yaml(self.configFilePath)
 
         entityConfigManager = shotgunCache.EntityConfigManager(config=config)
-        LOG.info("Loading entity configs")
-        entityConfigManager.load()
+        LOG.debug("Loading entity configs")
+        entityConfigManager.load(validate=False)
 
         availableTypes = entityConfigManager.get_entity_types()
         configTypes = parseResults['entityTypes']
@@ -593,6 +590,27 @@ class Parser(object):
 
         config.history.save()
 
+        if parseResults['live']:
+            LOG.debug("Posting rebuild to server message queue")
+            conn = r.connect(**config['rethink'])
+            result = r.table('message_queue').insert({
+                'topic': 'server.rebuild',
+                'payload': {'configTypes': configTypes},
+                'updated_on': r.now()
+            }).run(conn)
+            msgID = result['generated_keys'][0]
+            LOG.debug("Rebuild Message ID: {0}".format(msgID))
+
+            # Wait for the rebuild to complete
+            q = r.table('message_queue').filter(lambda msg: msg['topic'].match('^cli.rebuild$').and_(msg['payload']['id'] == msgID)).changes().run(conn)
+            LOG.info("Waiting on server to rebuild")
+            change = q.next()
+            if LOG.getEffectiveLevel() < 10:
+                LOG.debug("Rebuild result:\n{0}".format(shotgunCache.pretty_json(change['new_val'])))
+            LOG.info("Rebuild completed in {0:.2f}s".format(change['new_val']['payload']['duration']))
+        else:
+            LOG.info("Rebuild will be performed the next time the server is started")
+
     def handle_resetStats(self, parseResults):
         import shotgunCache
 
@@ -600,7 +618,7 @@ class Parser(object):
 
         statTablePrefix = config['rethink_stat_table_prefix']
 
-        rethink = rethinkdb.connect(**config['rethink'])
+        rethink = r.connect(**config['rethink'])
         existingTables = rethink.table_list()
 
         pattern = statTablePrefix + '*'

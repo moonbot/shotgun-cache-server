@@ -57,7 +57,7 @@ class EntityImporter(object):
         self.delete_untracked_entities_from_cache(configs)
 
         if not len(configsToLoad):
-            LOG.info("All entity types have been imported.")
+            LOG.info("Import Skipped, all entitities imported")
             return
 
         LOG.info("Importing {0} entity types into the cache".format(len(configsToLoad)))
@@ -71,6 +71,8 @@ class EntityImporter(object):
         if not self.config['delete_cache_for_untracked_entities']:
             # TODO - is this needed?
             return
+
+        trackedTypes = [c.type for c in configs]
 
         # Get the list of cached entity types
         tablePrefix = self.config['rethink_entity_table_prefix']
@@ -87,21 +89,30 @@ class EntityImporter(object):
         unusedCacheTables = [t for t in existingCacheTables if t not in usedCacheTables]
         LOG.debug("Unused cache tables: {0}".format(unusedCacheTables))
 
-        LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
-        with self.rethinkPool.get() as conn:
-            for table in unusedCacheTables:
-                LOG.info("Deleting table: {0}".format(table))
-                r.table_drop(table).run(conn)
+        if unusedCacheTables:
+            LOG.info("Deleting {0} cache tables".format(len(unusedCacheTables)))
+            with self.rethinkPool.get() as conn:
+                for table in unusedCacheTables:
+                    LOG.info("Deleting table: {0}".format(table))
+                    r.table_drop(table).run(conn)
 
         # Delete untracked files
         downloadsFolder = self.config.downloadsFolderPath
         entitiesWithFiles = [f for f in os.listdir(downloadsFolder) if os.path.isdir(os.path.join(downloadsFolder, f))]
-        oldFolders = set(entitiesWithFiles) - set([c.type for c in configs])
-        print("oldFolders: {0}".format(oldFolders)) # TESTING
+        oldFolders = set(entitiesWithFiles) - set(trackedTypes)
         for oldFolder in oldFolders:
             folderPath = os.path.join(downloadsFolder, oldFolder)
             LOG.debug("Removing untracked files for type '{0}' at {1}".format(oldFolder, folderPath))
             shutil.rmtree(folderPath)
+
+        # Delete untracked entities from history
+        self.config.history.load()
+        cachedEntities = self.config.history.get('cached_entities', {})
+        for sgType in cachedEntities.keys():
+            if sgType not in trackedTypes:
+                LOG.debug("Removing untracked type '{0}' from history".format(sgType))
+                cachedEntities.pop(sgType)
+        self.config.history.save()
 
     def import_entities(self, entityConfigs):
         """
@@ -121,7 +132,7 @@ class EntityImporter(object):
         LOG.debug("Imported {0} entities in {1:0.2f}s".format(self.totalEntitiesImported, totalImportTime))
 
     def import_entities_for_config(self, config):
-        LOG.debug("Importing entities for type '{0}'".format(config.type))
+        LOG.info("Importing entities for type '{0}'".format(config.type))
         entityCount = self.get_entity_counts(config)
         pageCount = int(math.ceil(entityCount / float(self.config['import.batch_size'])))
 
@@ -256,12 +267,12 @@ class EntityImporter(object):
             raise IOError(result['first_error'])
 
     def finalize_import_for_config(self, config, startImportTimestamp):
-        LOG.info("Imported all entities for type '{0}'".format(config.type))
+        LOG.debug("Finalizing import for type '{0}'".format(config.type))
 
         # Remove existing entities stored in the cache
         # that are no longer in shotgun
         cachedEntityIDs = set(r
-            .table(config['table'])
+            .table(config['table'])  # NOQA
             .map(lambda asset: asset['id'])
             .coerce_to('array')
             .run(self.controller.rethink)
@@ -283,3 +294,5 @@ class EntityImporter(object):
         configHistory['config-hash'] = config.hash
         configHistory['import-timestamp'] = startImportTimestamp
         self.config.history.save()
+
+        LOG.info("Import Complete for type '{0}'".format(config.type))

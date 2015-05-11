@@ -317,7 +317,12 @@ def combine_dict(a, b, copy=True):
 
 
 def pretty_json(obj):
-    return json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': '))
+    def dateTimeHandler(obj):
+        if isinstance(obj, datetime.datetime):
+            obj = str(obj)
+        return obj
+
+    return json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': '), default=dateTimeHandler)
 
 
 def update_dict(a, b, copy=True):

@@ -65,17 +65,23 @@ class EntityConfigManager(object):
         self.sg = self.config.create_shotgun_connection()
 
         self.configs = {}
-        self.schema = None
+        self._schema = None
 
     def __contains__(self, key):
         return key in self.configs
 
-    def load(self):
-        LOG.debug("Retrieving schema from shotgun")
-        self.schema = self.sg.schema_read()
-        self.load_config_from_files()
+    @property
+    def schema(self):
+        raise Exception()
+        if self._schema is None:
+            LOG.debug("Retrieving schema from shotgun")
+            self._schema = self.sg.schema_read()
+        return self._schema
 
-    def load_config_from_files(self):
+    def load(self, validate=True):
+        self.load_config_from_files(validate=validate)
+
+    def load_config_from_files(self, validate=True):
         """
         Read the config files and create EntityConfig instances
         """
@@ -89,7 +95,8 @@ class EntityConfigManager(object):
                 typ,
                 path,
             )
-            self.validate_config(config)
+            if validate:
+                self.validate_config(config)
             self.configs[config.type] = config
 
     def validate_config(self, config):
