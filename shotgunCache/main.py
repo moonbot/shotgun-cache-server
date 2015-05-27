@@ -45,6 +45,7 @@ class Parser(object):
         self.setup_subparser_validateFields()
         self.setup_subparser_rebuild()
         self.setup_subparser_resetStats()
+        self.setup_subparser_loadNewEvents()
 
     def parse(self, args):
         if not len(args):
@@ -230,6 +231,13 @@ class Parser(object):
         )
         parser.set_defaults(func=self.handle_resetStats)
 
+    def setup_subparser_loadNewEvents(self):
+        parser = self.subparsers.add_parser(
+            'load-new-events',
+            help='(Developer) Force loading of new events',
+        )
+        parser.set_defaults(func=self.handle_loadNewEvents)
+
     def handle_setup(self, parseResults):
         import shotgunCache
         # Use ruamel to support preserving comments
@@ -361,7 +369,9 @@ class Parser(object):
         if not os.path.exists(downloads_path):
             LOG.warning("Downloads path doesn't exist.  This should be created before starting the server.")
 
-        print("\nWhich entities would you like to cache?\nThis should be a space separated list of Shotgun entity types.\nYou can also leave this blank and specify these later using 'shotgunCache create-entity-configs'\n")
+        print("\nWhich entities would you like to cache?\n"
+              "This should be a space separated list of Shotgun entity types.\n"
+              "You can also leave this blank and specify these later using 'shotgunCache create-entity-configs'\n")
         entityTypes = askUser("Entity Types (Ex: Asset Shot): ", required=False)
         if entityTypes:
             entityTypes = entityTypes.split(' ')
@@ -599,7 +609,7 @@ class Parser(object):
                 'updated_on': r.now()
             }).run(conn)
             msgID = result['generated_keys'][0]
-            LOG.debug("Rebuild Message ID: {0}".format(msgID))
+            LOG.debug("Message ID: {0}".format(msgID))
 
             # Wait for the rebuild to complete
             q = r.table('message_queue').filter(lambda msg: msg['topic'].match('^cli.rebuild$').and_(msg['payload']['id'] == msgID)).changes().run(conn)
@@ -644,6 +654,30 @@ class Parser(object):
         for table in tablesToDrop:
             LOG.info("Deleting table: {0}".format(table))
             rethink.table_drop(table)
+
+    def handle_loadNewEvents(self, parseResults):
+        import shotgunCache
+
+        config = shotgunCache.Config.load_from_yaml(self.configFilePath)
+
+        LOG.debug("Posting load-new-events to server message queue")
+        conn = r.connect(**config['rethink'])
+        result = r.table('message_queue').insert({
+            'topic': 'server.update_cache',
+            'payload': {},
+            'updated_on': r.now()
+        }).run(conn)
+        msgID = result['generated_keys'][0]
+        LOG.debug("Message ID: {0}".format(msgID))
+
+        # Wait for the rebuild to complete
+        q = r.table('message_queue').filter(lambda msg: msg['topic'].match('^cli.update_cache$').and_(msg['payload']['id'] == msgID)).changes().run(conn)
+        LOG.info("Waiting on server to rebuild")
+        change = q.next()
+        if LOG.getEffectiveLevel() < 10:
+            LOG.debug("Update Cache result:\n{0}".format(shotgunCache.pretty_json(change['new_val'])))
+        LOG.info("Update Cache completed in {0:.2f}s".format(change['new_val']['payload']['duration']))
+
 
 def resolveConfigPath(path):
     path = os.path.expanduser(path)

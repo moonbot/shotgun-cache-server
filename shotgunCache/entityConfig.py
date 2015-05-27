@@ -72,7 +72,6 @@ class EntityConfigManager(object):
 
     @property
     def schema(self):
-        raise Exception()
         if self._schema is None:
             LOG.debug("Retrieving schema from shotgun")
             self._schema = self.sg.schema_read()

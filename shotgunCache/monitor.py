@@ -2,6 +2,7 @@ import time
 import datetime
 import socket
 import logging
+import gevent
 
 import shotgun_api3 as sg
 
@@ -35,7 +36,6 @@ class ShotgunEventMonitor(object):
 
         self._latestEventID = None
         self._latestEventIDPath = None
-        self._loopStartTime = None
 
     def set_entity_types(self, entityTypes):
         self.entityTypes = entityTypes
@@ -43,57 +43,18 @@ class ShotgunEventMonitor(object):
     def start(self):
         self.load_initial_eventID()
         self.build_base_filters()
+
+        self.workQueue.put({'type': 'monitor_started'})
         self.run()
 
     def run(self):
         LOG.info("Monitoring Shotgun")
-        totalEventsInLoop = 0
-        reset = False
         heartbeatTime = None
-        self.workQueue.put({'type': 'monitor_started'})
+
         while True:
             LOG.debug("Checking for new events")
-            if reset:
-                totalEventsInLoop = 0
-                timeToPost = 0
-                self._loopStartTime = time.time()
-
-            events = self.get_new_events()
-
-            if len(events):
-                LOG.debug("Received {0} new events".format(len(events)))
-
-                postStartTime = time.time()
-                work = {
-                    'type': 'event_log_entries',
-                    'data': {
-                        'entities': events,
-                    },
-                }
-
-                self.workQueue.put(work)
-                timeToPost = time.time() - postStartTime
-
-                self.set_latest_event_log_entry(events[-1])
-                totalEventsInLoop += len(events)
-                reset = False
-            else:
-                self.fetch_delay()
-                reset = True
-
-                # Only report status for loops with events
-                if totalEventsInLoop:
-                    work = {
-                        'type': 'stat',
-                        'data': {
-                            'type': 'shotgun_event_update',
-                            'total_events': totalEventsInLoop,
-                            # might not need this, most of the time below 1 ms
-                            'duration': round(timeToPost * 1000, 3),  # ms
-                            'created_at': datetime.datetime.utcnow().isoformat(),
-                        },
-                    }
-                    self.workQueue.put(work)
+            self._loopStartTime = time.time()
+            self.process_new_events()
 
             # Track monitor status so we can graph when it goes down
             currTime = time.time()
@@ -108,6 +69,49 @@ class ShotgunEventMonitor(object):
                 }
                 self.workQueue.put(work)
                 heartbeatTime = currTime
+
+            self.fetch_delay()
+
+    def process_new_events(self):
+        totalEventsInLoop = 0
+        timeToPost = 0
+
+        # Loop until we run out of new events
+        while True:
+            events = self.get_new_events()
+
+            if len(events):
+                LOG.debug("Received {0} new events".format(len(events)))
+                postStartTime = time.time()
+
+                work = {
+                    'type': 'event_log_entries',
+                    'data': {
+                        'entities': events,
+                    },
+                }
+                self.workQueue.put(work)
+
+                timeToPost = time.time() - postStartTime
+
+                self.set_latest_event_log_entry(events[-1])
+                totalEventsInLoop += len(events)
+
+            else:
+                # Only report status for loops with events
+                if totalEventsInLoop:
+                    work = {
+                        'type': 'stat',
+                        'data': {
+                            'type': 'shotgun_event_update',
+                            'total_events': totalEventsInLoop,
+                            # might not need this, most of the time below 1 ms
+                            'duration': round(timeToPost * 1000, 3),  # ms
+                            'created_at': datetime.datetime.utcnow().isoformat(),
+                        },
+                    }
+                    self.workQueue.put(work)
+                break
 
     def get_new_events(self):
         """
@@ -193,6 +197,10 @@ class ShotgunEventMonitor(object):
         return self.sg
 
     def fetch_delay(self):
+        """
+        Delay for:
+            fetch_interval - any time taken to post events.
+        """
         diff = 0
         if self._loopStartTime is not None:
             diff = time.time() - self._loopStartTime
